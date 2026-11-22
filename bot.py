@@ -48,7 +48,12 @@ async def on_ready():
 
 async def main():
     async with bot:
-        await bot.load_extension("cogs.rooms")
+        try:
+            await bot.load_extension("cogs.rooms")
+            print("Cog rooms загружен")
+        except Exception as e:
+            print(f"ОШИБКА загрузки cog: {e}")
+            raise
         await bot.start(_load_token())
 
 
