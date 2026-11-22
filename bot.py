@@ -25,7 +25,6 @@ def _load_token():
 
 intents = discord.Intents.default()
 intents.voice_states = True
-intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
