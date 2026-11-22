@@ -40,13 +40,10 @@ async def on_ready():
             pass
     if not guild_id:
         guild_id = 1573386089467748482
-    if guild_id:
-        guild = discord.Object(id=guild_id)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-    else:
-        await bot.tree.sync()
-    print(f"Rooms-бот запущен: {bot.user}")
+    guild = discord.Object(id=guild_id)
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+    print(f"Rooms-бот запущен: {bot.user} | Синкнуто {len(synced)} команд на гильдию {guild_id}")
 
 
 async def main():
