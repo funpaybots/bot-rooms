@@ -6,7 +6,13 @@ from discord.ext import commands
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
+log = logging.getLogger(__name__)
 
 
 def _load_token():
@@ -43,16 +49,16 @@ async def on_ready():
     guild = discord.Object(id=guild_id)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
-    print(f"Rooms-бот запущен: {bot.user} | Синкнуто {len(synced)} команд на гильдию {guild_id}")
+    log.info("Rooms-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
 
 
 async def main():
     async with bot:
         try:
             await bot.load_extension("cogs.rooms")
-            print("Cog rooms загружен")
+            log.info("Cog rooms загружен")
         except Exception as e:
-            print(f"ОШИБКА загрузки cog: {e}")
+            log.error("ОШИБКА загрузки cog: %s", e)
             raise
         await bot.start(_load_token())
 
