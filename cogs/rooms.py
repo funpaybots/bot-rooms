@@ -337,27 +337,35 @@ class Rooms(commands.Cog):
             }
             _save_rooms(guild.id, rooms)
 
-            # Панель управления
-            panel_ch = guild.get_channel(panel_ch_id)
-            if panel_ch:
-                embed = discord.Embed(
-                    title="🏠 Твой уголок",
-                    description=(
-                        f"{member.mention}, твой канал: {vc.mention}\n"
-                        "Используй кнопки ниже для управления."
-                    ),
-                    color=discord.Color.from_str("#a9c9ff"),
-                    timestamp=datetime.datetime.now(),
-                )
-                embed.set_footer(text=f"Владелец: {member.display_name}")
-                view = RoomPanel(vc.id)
-                try:
-                    msg = await panel_ch.send(embed=embed, view=view)
-                    rooms[str(vc.id)]["panel_msg_id"] = msg.id
-                    rooms[str(vc.id)]["panel_ch_id"] = panel_ch.id
-                    _save_rooms(guild.id, rooms)
-                except discord.HTTPException:
-                    pass
+            # Панель управления — шлём в ЛС владельцу
+            embed = discord.Embed(
+                title="🏠 Твой уголок",
+                description=(
+                    f"Твой канал: {vc.mention}\n"
+                    "Используй кнопки ниже для управления."
+                ),
+                color=discord.Color.from_str("#a9c9ff"),
+                timestamp=datetime.datetime.now(),
+            )
+            embed.set_footer(text=f"Владелец: {member.display_name}")
+            view = RoomPanel(vc.id)
+            try:
+                await member.send(embed=embed, view=view)
+            except discord.Forbidden:
+                # ЛС закрыты — постим в канал панели как запасной вариант
+                panel_ch = guild.get_channel(panel_ch_id)
+                if panel_ch:
+                    try:
+                        msg = await panel_ch.send(
+                            content=member.mention,
+                            embed=embed,
+                            view=view,
+                        )
+                        rooms[str(vc.id)]["panel_msg_id"] = msg.id
+                        rooms[str(vc.id)]["panel_ch_id"] = panel_ch.id
+                        _save_rooms(guild.id, rooms)
+                    except discord.HTTPException:
+                        pass
 
         # ── Удаление пустой комнаты ───────────────────────────────
         if before.channel and before.channel.id != trigger_id:
@@ -382,6 +390,33 @@ class Rooms(commands.Cog):
                     pass
                 del rooms[str(before.channel.id)]
                 _save_rooms(guild.id, rooms)
+
+    # ── /my_room ──────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="my_room", description="Получить панель управления своим уголком")
+    async def my_room(self, interaction: discord.Interaction):
+        rooms = _rooms(interaction.guild.id)
+        # Найти комнату где владелец — этот участник
+        my = next(
+            ((ch_id, info) for ch_id, info in rooms.items()
+             if str(info.get("owner_id")) == str(interaction.user.id)),
+            None,
+        )
+        if not my:
+            await interaction.response.send_message("У тебя нет активного уголка.", ephemeral=True)
+            return
+        ch_id, info = my
+        vc = interaction.guild.get_channel(int(ch_id))
+        if not vc:
+            await interaction.response.send_message("Уголок не найден — возможно уже удалён.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="🏠 Твой уголок",
+            description=f"Твой канал: {vc.mention}\nИспользуй кнопки ниже для управления.",
+            color=discord.Color.from_str("#a9c9ff"),
+        )
+        embed.set_footer(text=f"Владелец: {interaction.user.display_name}")
+        await interaction.response.send_message(embed=embed, view=RoomPanel(vc.id), ephemeral=True)
 
     # ── /setup_rooms ──────────────────────────────────────────────────────────
 
