@@ -228,14 +228,16 @@ class KickSelectView(discord.ui.View):
 # ── Выбор активити ────────────────────────────────────────────────────────────
 
 ACTIVITIES = [
-    ("🎯 Gartic Phone",   "Gartic Phone",   "879863881349087252"),
-    ("🧩 Chess",          "Chess",           "832012774040141894"),
-    ("🎲 Poker Night",    "Poker Night",     "755827207812677713"),
-    ("🎬 Watch Together", "Watch Together",  "880218394199220334"),
-    ("🎸 Bobble League",  "Bobble League",   "947957217959759964"),
-    ("🏖 Sketchheads",    "Sketchheads",     "902271654783242291"),
-    ("🌊 Putt Party",     "Putt Party",      "945737671223029840"),
-    ("🎵 Spotify",        "Spotify",         "914090279785586749"),
+    ("🎯 Gartic Phone",    "Gartic Phone",    "1007373802981822582"),
+    ("🧩 Chess in the Park","Chess",          "832012774040141894"),
+    ("🎲 Poker Night",     "Poker Night",     "755827207812677713"),
+    ("🎬 Watch Together",  "Watch Together",  "880218394199220334"),
+    ("🏖 Sketchheads",     "Sketchheads",     "902271654783242291"),
+    ("🌊 Putt Party",      "Putt Party",      "945737671223029840"),
+    ("🎮 Blazing 8s",      "Blazing 8s",      "832013003968348200"),
+    ("🃏 SpellCast",       "SpellCast",       "852509694341283871"),
+    ("🔤 Letter League",   "Letter League",   "879863686565621790"),
+    ("🎵 Bobble League",   "Bobble League",   "947957217959759964"),
 ]
 
 
