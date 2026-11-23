@@ -23,9 +23,15 @@ def check(name, cond, extra=""):
         fails.append(name)
 
 
+class FakeRole:
+    def __init__(self, rid):
+        self.id = rid
+
+
 class FakeMember:
-    def __init__(self, uid):
+    def __init__(self, uid, roles=()):
         self.id = uid
+        self.roles = [FakeRole(r) for r in roles]
 
 
 class FakeGuild:
@@ -64,6 +70,23 @@ check("divorce cleans both", rc._partner_of(555, 1) is None and rc._partner_of(5
 # Персистентность
 rc._set_marriage(555, 1, 2, time.time())
 check("persisted", os.path.exists(os.path.join(storage.DATA_DIR, "marriages.json")))
+
+# Пол и фильтр брака
+male = FakeMember(10, [rc.MALE_ROLE_ID])
+female = FakeMember(11, [rc.FEMALE_ROLE_ID])
+nobody = FakeMember(12, [123])
+both = FakeMember(13, [rc.MALE_ROLE_ID, rc.FEMALE_ROLE_ID])
+
+check("gender male", rc._gender(male) == "male")
+check("gender female", rc._gender(female) == "female")
+check("gender none", rc._gender(nobody) is None)
+check("gender both -> none", rc._gender(both) is None)
+
+check("m+f allowed", rc._marriage_block(male, female) == "")
+check("f+m allowed", rc._marriage_block(female, male) == "")
+check("m+m blocked", "Однополые" in rc._marriage_block(male, male), rc._marriage_block(male, male)[:30])
+check("f+f blocked", "Однополые" in rc._marriage_block(female, female))
+check("no gender blocked", "верифиц" in rc._marriage_block(male, nobody))
 
 # Вьюхи собираются
 class _FakeDiscordMember:

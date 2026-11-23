@@ -27,6 +27,10 @@ DEFAULT_PANEL_CH   = 1573423257724395575   # 🔑--мой-уголок
 COLOR = 0xA9C9FF
 HEART_COLOR = 0xFF9AD5
 
+# Роли пола сервера Roet — брак только ♂ + ♀
+MALE_ROLE_ID = 1573422846485594193
+FEMALE_ROLE_ID = 1573422843574886453
+
 # (guild_id, user_id) → ts последнего предложения, анти-спам
 _last_propose = {}
 
@@ -100,6 +104,29 @@ def _days_together(since_ts: float) -> int:
     return max(0, int((time.time() - since_ts) // 86400))
 
 
+def _gender(member):
+    """'male' / 'female' / None (нет роли пола или обе сразу)."""
+    ids = {getattr(r, "id", 0) for r in getattr(member, "roles", [])}
+    male = MALE_ROLE_ID in ids
+    female = FEMALE_ROLE_ID in ids
+    if male == female:
+        return None
+    return "male" if male else "female"
+
+
+def _marriage_block(a, b) -> str:
+    """Почему брак невозможен. Пустая строка — можно."""
+    ga, gb = _gender(a), _gender(b)
+    if ga is None or gb is None:
+        return (
+            "Жениться могут только верифицированные — с ролью ♂ или ♀.\n"
+            "Нет роли — сначала верификация в проходке."
+        )
+    if ga == gb:
+        return "Брак у нас только ♂ + ♀. Однополые пары не регистрируем 😅"
+    return ""
+
+
 def _alive_partner(guild: discord.Guild, user_id: int):
     """Партнёр брака, если он всё ещё на сервере. Иначе брак считается распавшимся и чистится."""
     m = _partner_of(guild.id, user_id)
@@ -149,6 +176,20 @@ class ProposalView(discord.ui.View):
                     embed=discord.Embed(
                         title="😔 Не сложилось",
                         description="Кто-то из вас уже успел жениться на другом.",
+                        color=discord.Color.red(),
+                    ),
+                    view=None,
+                )
+                return
+            # Пол мог поменяться/роли сняться, пока висело предложение
+            fresh_a = guild.get_member(self.proposer.id) or self.proposer
+            fresh_b = guild.get_member(self.target.id) or self.target
+            gender_block = _marriage_block(fresh_a, fresh_b)
+            if gender_block:
+                await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="😔 Не сложилось",
+                        description=gender_block,
                         color=discord.Color.red(),
                     ),
                     view=None,
@@ -745,6 +786,11 @@ class Rooms(commands.Cog):
             return
         if user.bot:
             await interaction.response.send_message("Боты пока не женятся. Законы о роботах не приняты.", ephemeral=True)
+            return
+
+        block = _marriage_block(interaction.user, user)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
             return
 
         my_partner, _ = _alive_partner(guild, interaction.user.id)
