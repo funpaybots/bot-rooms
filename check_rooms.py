@@ -6,6 +6,8 @@ import sys
 import tempfile
 import time
 
+import asyncio
+
 TMP = tempfile.mkdtemp(prefix="rooms_check_")
 sys.path.insert(0, r"C:\Users\tomoe\Downloads\bot-rooms")
 
@@ -116,6 +118,38 @@ vid, info = rc._couple_room_for(556, 2, 1)
 check("couple room found", vid == 100 and info.get("text_channel_id") == 101)
 check("single room not couple", rc._couple_room_for(556, 3, 4)[0] is None)
 check("stranger no room", rc._couple_room_for(556, 5, 6)[0] is None)
+
+
+# Без пары комната не создаётся
+class SendMember:
+    def __init__(self, uid):
+        self.id = uid
+        self.display_name = "Тест"
+        self.sent = []
+
+    async def send(self, **kw):
+        self.sent.append(kw)
+
+
+class NoChannelGuild:
+    def __init__(self):
+        self.id = 777
+        self.created = []
+
+    def get_member(self, uid):
+        return None
+
+    def get_channel(self, cid):
+        return None
+
+
+solo = SendMember(42)
+solo_guild = NoChannelGuild()
+cog_obj = rc.Rooms.__new__(rc.Rooms)
+asyncio.run(cog_obj._create_couple_room(solo, solo_guild, {}))
+check("no partner -> no room", not solo_guild.created and bool(solo.sent))
+refusal_text = solo.sent[0]["embed"].description if solo.sent else ""
+check("refusal has marry hint", "marry" in refusal_text.lower(), refusal_text[:40])
 
 # Вьюхи собираются
 class _FakeDiscordMember:

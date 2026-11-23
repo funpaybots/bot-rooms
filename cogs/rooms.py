@@ -842,6 +842,10 @@ class Rooms(commands.Cog):
 
     async def _create_couple_room(self, member: discord.Member, guild: discord.Guild, cfg: dict):
         partner, _since = _alive_partner(guild, member.id)
+        if partner is None:
+            # Не женат — гнёздышко не создаём
+            await self._couple_room_refused(member, guild, cfg)
+            return
 
         # Уже есть гнездо (своё или партнёра) — просто подселяем, без дубля
         rooms = _rooms(guild.id)
@@ -1028,6 +1032,31 @@ class Rooms(commands.Cog):
                     _save_rooms(guild.id, rooms)
                 except discord.HTTPException:
                     pass
+
+    async def _couple_room_refused(self, member, guild, cfg):
+        """Вошёл в «💗 · Войти» без пары — комнату не делаем, объясняем."""
+        embed = discord.Embed(
+            title="💗 Только для пар",
+            description=(
+                "Комната для двоих создаётся только для женатых.\n"
+                "Сначала предложение: `/marry @ник` — потом заходите сюда вдвоём 💍"
+            ),
+            color=HEART_COLOR,
+        )
+        try:
+            await member.send(embed=embed)
+            return
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
+            return
+        fallback_id = int(cfg.get("couple_panel_id") or cfg.get("panel_channel_id") or 0)
+        fallback = guild.get_channel(fallback_id) if fallback_id else None
+        if fallback is not None:
+            try:
+                await fallback.send(content=member.mention, embed=embed, delete_after=15)
+            except discord.HTTPException:
+                pass
 
     # ── /my_room ──────────────────────────────────────────────────────────────
 
