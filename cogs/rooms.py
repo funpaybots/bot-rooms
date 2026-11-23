@@ -7,6 +7,7 @@
 
 import asyncio
 import datetime
+import time
 
 import discord
 from discord import app_commands
@@ -16,11 +17,18 @@ from storage import load, save
 
 ROOMS_FILE = "rooms.json"
 SETTINGS_FILE = "settings.json"
+MARRIAGES_FILE = "marriages.json"
 
 # ID канала-триггера и категории на сервере Roet (можно переопределить через /setup_rooms)
 DEFAULT_TRIGGER_CH = 1573423260513607771   # ➕ · Создать уголок
 DEFAULT_CATEGORY   = 1573423253500985344   # 🏠˚ Свой уголок
 DEFAULT_PANEL_CH   = 1573423257724395575   # 🔑--мой-уголок
+
+COLOR = 0xA9C9FF
+HEART_COLOR = 0xFF9AD5
+
+# (guild_id, user_id) → ts последнего предложения, анти-спам
+_last_propose = {}
 
 
 # ── Вспомогательные ───────────────────────────────────────────────────────────
@@ -52,6 +60,167 @@ def _owner_of(guild_id: int, channel_id: int) -> int | None:
     rooms = _rooms(guild_id)
     info = rooms.get(str(channel_id))
     return info.get("owner_id") if info else None
+
+
+# ── Свадьбы ───────────────────────────────────────────────────────────────────
+
+def _marriages(guild_id: int) -> dict:
+    return load(MARRIAGES_FILE, {}).get(str(guild_id), {})
+
+
+def _save_marriages(guild_id: int, data: dict):
+    all_data = load(MARRIAGES_FILE, {})
+    all_data[str(guild_id)] = data
+    save(MARRIAGES_FILE, all_data)
+
+
+def _partner_of(guild_id: int, user_id: int):
+    """(partner_id, since_ts) или None."""
+    m = _marriages(guild_id).get(str(user_id))
+    if not m:
+        return None
+    return int(m["partner_id"]), float(m.get("since_ts", 0))
+
+
+def _set_marriage(guild_id: int, a: int, b: int, since_ts: float):
+    data = _marriages(guild_id)
+    data[str(a)] = {"partner_id": b, "since_ts": since_ts}
+    data[str(b)] = {"partner_id": a, "since_ts": since_ts}
+    _save_marriages(guild_id, data)
+
+
+def _remove_marriage(guild_id: int, a: int, b: int):
+    data = _marriages(guild_id)
+    data.pop(str(a), None)
+    data.pop(str(b), None)
+    _save_marriages(guild_id, data)
+
+
+def _days_together(since_ts: float) -> int:
+    return max(0, int((time.time() - since_ts) // 86400))
+
+
+def _alive_partner(guild: discord.Guild, user_id: int):
+    """Партнёр брака, если он всё ещё на сервере. Иначе брак считается распавшимся и чистится."""
+    m = _partner_of(guild.id, user_id)
+    if not m:
+        return None, None
+    partner_id, since_ts = m
+    member = guild.get_member(partner_id)
+    if member is None:
+        # Партнёр ушёл с сервера — брак больше не считается
+        _remove_marriage(guild.id, user_id, partner_id)
+        return None, None
+    return member, since_ts
+
+
+class ProposalView(discord.ui.View):
+    def __init__(self, proposer: discord.Member, target: discord.Member):
+        super().__init__(timeout=120)
+        self.proposer = proposer
+        self.target = target
+        self.answered = False
+
+    @discord.ui.button(label="Согласен 💍", style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._answer(interaction, True)
+
+    @discord.ui.button(label="Нет 💔", style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._answer(interaction, False)
+
+    async def _answer(self, interaction: discord.Interaction, accepted: bool):
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message("Это предложение не тебе 😏", ephemeral=True)
+            return
+        if self.answered:
+            await interaction.response.defer()
+            return
+        self.answered = True
+        self.stop()
+
+        guild = interaction.guild
+        if accepted:
+            # К моменту нажатия кто-то из них мог успеть жениться
+            p1, _ = _alive_partner(guild, self.proposer.id)
+            p2, _ = _alive_partner(guild, self.target.id)
+            if p1 or p2:
+                await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="😔 Не сложилось",
+                        description="Кто-то из вас уже успел жениться на другом.",
+                        color=discord.Color.red(),
+                    ),
+                    view=None,
+                )
+                return
+            since_ts = time.time()
+            _set_marriage(guild.id, self.proposer.id, self.target.id, since_ts)
+            _last_propose.pop((guild.id, self.proposer.id), None)
+            days = discord.utils.format_dt(datetime.datetime.fromtimestamp(since_ts), "D")
+            embed = discord.Embed(
+                title="💍 Свадьба!",
+                description=(
+                    f"{self.proposer.mention} и {self.target.mention} теперь пара!\n\n"
+                    f"Свадебная дата: {days}\n"
+                    f"У вас есть приватная комната — зайдите в **💗 · Войти** вместе."
+                ),
+                color=HEART_COLOR,
+                timestamp=datetime.datetime.now(),
+            )
+            embed.set_footer(text="Горишь ярко ✨ /marriage — узнать, сколько вы вместе")
+            await interaction.response.edit_message(embed=embed, view=None)
+        else:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="💔 Отказ",
+                    description=f"{self.target.mention} отказал {self.proposer.mention}. Может в другой раз.",
+                    color=discord.Color.red(),
+                ),
+                view=None,
+            )
+        _last_propose.pop((guild.id, self.proposer.id), None)
+
+    async def on_timeout(self):
+        self.answered = True
+
+
+class DivorceView(discord.ui.View):
+    def __init__(self, initiator: discord.Member, partner: discord.Member):
+        super().__init__(timeout=60)
+        self.initiator = initiator
+        self.partner = partner
+
+    @discord.ui.button(label="Развестись 💔", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.initiator.id:
+            await interaction.response.send_message("Развод только по обоюдному... то есть по личной заявке 😅", ephemeral=True)
+            return
+        _remove_marriage(interaction.guild.id, interaction.user.id, self.partner.id)
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="💔 Развод",
+                description=f"{interaction.user.mention} и {self.partner.mention} больше не пара.",
+                color=discord.Color.red(),
+            ),
+            view=None,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Остаться ❤️", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.initiator.id:
+            await interaction.response.send_message("Это решает тот, кто подавал на развод.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="❤️ Мы рады",
+                description="Вы передумали. Берегите друг друга.",
+                color=HEART_COLOR,
+            ),
+            view=None,
+        )
+        self.stop()
 
 
 # ── Панель управления (persistent view) ───────────────────────────────────────
@@ -296,6 +465,11 @@ class Rooms(commands.Cog):
         trigger_id = int(cfg.get("trigger_channel_id") or DEFAULT_TRIGGER_CH)
         category_id = int(cfg.get("category_id") or DEFAULT_CATEGORY)
         panel_ch_id = int(cfg.get("panel_channel_id") or DEFAULT_PANEL_CH)
+        couple_trigger_id = int(cfg.get("couple_trigger_id") or 0)
+
+        # ── Парная комната (💗 · Войти) ───────────────────────────
+        if couple_trigger_id and after.channel and after.channel.id == couple_trigger_id:
+            await self._create_couple_room(member, guild, cfg)
 
         # ── Создание комнаты ──────────────────────────────────────
         if after.channel and after.channel.id == trigger_id:
@@ -391,6 +565,97 @@ class Rooms(commands.Cog):
                 del rooms[str(before.channel.id)]
                 _save_rooms(guild.id, rooms)
 
+    async def _create_couple_room(self, member: discord.Member, guild: discord.Guild, cfg: dict):
+        partner, _since = _alive_partner(guild, member.id)
+
+        # Уже есть гнездо (своё или партнёра) — просто подселяем, без дубля
+        rooms = _rooms(guild.id)
+        for owner in (member.id, partner.id if partner else None):
+            if owner is None:
+                continue
+            for ch_id, info in rooms.items():
+                if info.get("kind") != "couple" or str(info.get("owner_id")) != str(owner):
+                    continue
+                vc = guild.get_channel(int(ch_id))
+                if vc is None:
+                    continue
+                try:
+                    await member.move_to(vc)
+                except discord.HTTPException:
+                    pass
+                return
+
+        category_id = int(cfg.get("couple_category_id") or 0)
+        category = guild.get_channel(category_id)
+        if category is None:
+            category = None  # без категории — упадёт в корень, но не умрём
+
+        if partner:
+            ch_name = f"💗 {member.display_name} & {partner.display_name}"[:100]
+        else:
+            ch_name = f"💗 {member.display_name}"[:100]
+
+        try:
+            vc = await guild.create_voice_channel(
+                ch_name,
+                category=category,
+                user_limit=2,
+                reason=f"Парная комната {member}",
+            )
+            # Приватная: только владелец (+ партнёр) видят и заходят
+            await vc.set_permissions(
+                guild.default_role, view_channel=False, connect=False
+            )
+            await vc.set_permissions(
+                member, view_channel=True, connect=True, manage_channels=True, speak=True
+            )
+            if partner:
+                await vc.set_permissions(partner, view_channel=True, connect=True, speak=True)
+        except discord.HTTPException:
+            return
+
+        try:
+            await member.move_to(vc)
+        except discord.HTTPException:
+            await vc.delete()
+            return
+
+        rooms = _rooms(guild.id)
+        rooms[str(vc.id)] = {
+            "owner_id": member.id,
+            "owner_name": str(member),
+            "kind": "couple",
+            "partner_id": (partner.id if partner else None),
+            "created_at": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+        }
+        _save_rooms(guild.id, rooms)
+
+
+        if partner:
+            desc = (
+                f"Ваш гнёздышко: {vc.mention}\n"
+                f"Комната видна только вам двоим (и стаффу).\n"
+                f"Вы вместе {_days_together(_partner_of(guild.id, member.id)[1])} дн. 💕"
+            )
+        else:
+            desc = (
+                f"Ваша комната: {vc.mention}\n"
+                f"Она скрыта от остальных. Позовите вторую половинку через настройки канала,\n"
+                f"а чтобы она появилась сама — женитесь: `/marry @ник` 💍"
+            )
+        embed = discord.Embed(
+            title="💜 Гнёздышко для двоих",
+            description=desc,
+            color=HEART_COLOR,
+            timestamp=datetime.datetime.now(),
+        )
+        view = RoomPanel(vc.id)
+        try:
+            await member.send(embed=embed, view=view)
+        except discord.Forbidden:
+            # ЛС закрыты — молча оставляем панель доступной через /my_room
+            pass
+
     # ── /my_room ──────────────────────────────────────────────────────────────
 
     @app_commands.command(name="my_room", description="Получить панель управления своим уголком")
@@ -425,6 +690,8 @@ class Rooms(commands.Cog):
         trigger="Канал-триггер (войти = создать уголок)",
         category="Категория, где создаются уголки",
         panel="Текстовый канал с кнопками управления",
+        couple_trigger="Канал-триггер для парных комнат (💗 · Войти)",
+        couple_category="Категория, где создаются парные комнаты (💜 Мурмир)",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_rooms(
@@ -433,11 +700,19 @@ class Rooms(commands.Cog):
         trigger: discord.VoiceChannel,
         category: discord.CategoryChannel,
         panel: discord.TextChannel,
+        couple_trigger: discord.VoiceChannel = None,
+        couple_category: discord.CategoryChannel = None,
     ):
         cfg = _cfg(interaction.guild.id)
         cfg["trigger_channel_id"] = trigger.id
         cfg["category_id"] = category.id
         cfg["panel_channel_id"] = panel.id
+        if couple_trigger is not None:
+            cfg["couple_trigger_id"] = couple_trigger.id
+        if couple_category is not None:
+            cfg["couple_category_id"] = couple_category.id
+        elif couple_trigger is not None and couple_trigger.category_id:
+            cfg["couple_category_id"] = couple_trigger.category_id
         _save_cfg(interaction.guild.id, cfg)
 
         embed = discord.Embed(
@@ -447,7 +722,139 @@ class Rooms(commands.Cog):
         embed.add_field(name="Триггер", value=trigger.mention, inline=True)
         embed.add_field(name="Категория", value=category.mention, inline=True)
         embed.add_field(name="Панель", value=panel.mention, inline=True)
+        ct = int(cfg.get("couple_trigger_id") or 0)
+        cc = int(cfg.get("couple_category_id") or 0)
+        ct_ch = interaction.guild.get_channel(ct) if ct else None
+        cc_ch = interaction.guild.get_channel(cc) if cc else None
+        embed.add_field(
+            name="Парные 💗",
+            value=(f"{ct_ch.mention} → {cc_ch.mention}" if ct_ch and cc_ch else "не настроено"),
+            inline=False,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── Свадьбы ───────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="marry", description="Предложить руку и сердце 💍")
+    @app_commands.describe(user="Кому предлагаешь")
+    @app_commands.checks.cooldown(1, 60.0, key=lambda i: (i.guild_id, i.user.id))
+    async def marry(self, interaction: discord.Interaction, user: discord.Member):
+        guild = interaction.guild
+        if user.id == interaction.user.id:
+            await interaction.response.send_message("Себя женить нельзя, самодостаточность ещё никому не помогла 😅", ephemeral=True)
+            return
+        if user.bot:
+            await interaction.response.send_message("Боты пока не женятся. Законы о роботах не приняты.", ephemeral=True)
+            return
+
+        my_partner, _ = _alive_partner(guild, interaction.user.id)
+        if my_partner:
+            await interaction.response.send_message(
+                f"Ты уже в браке с {my_partner.mention}. Сначала развод: `/divorce`.", ephemeral=True
+            )
+            return
+        their_partner, _ = _alive_partner(guild, user.id)
+        if their_partner:
+            await interaction.response.send_message(
+                f"{user.mention} уже занят(а) — в браке с {their_partner.mention} 💍", ephemeral=True
+            )
+            return
+
+        last = _last_propose.get((guild.id, interaction.user.id), 0)
+        if time.time() - last < 120:
+            await interaction.response.send_message("Недавно тебе уже отказали. Дай людям подумать 😅", ephemeral=True)
+            return
+        _last_propose[(guild.id, interaction.user.id)] = time.time()
+
+        embed = discord.Embed(
+            title="💍 Вопрос на миллион",
+            description=(
+                f"{interaction.user.mention} делает предложение {user.mention}!\n\n"
+                f"{user.mention}, согласен(а)? У тебя 2 минуты."
+            ),
+            color=HEART_COLOR,
+            timestamp=datetime.datetime.now(),
+        )
+        await interaction.response.send_message(embed=embed, view=ProposalView(interaction.user, user))
+
+    @app_commands.command(name="divorce", description="Развестись 💔")
+    async def divorce(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        partner, since = _alive_partner(guild, interaction.user.id)
+        if not partner:
+            await interaction.response.send_message("Ты не в браке. Расстраиваться не о чем.", ephemeral=True)
+            return
+        days = _days_together(since)
+        embed = discord.Embed(
+            title="💔 Точно развод?",
+            description=(
+                f"Вы с {partner.mention} вместе {days} дн.\n"
+                f"Подумай ещё раз — кнопки внизу."
+            ),
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(embed=embed, view=DivorceView(interaction.user, partner))
+
+    @app_commands.command(name="marriage", description="Твой брак: кто, сколько дней 💕")
+    @app_commands.describe(user="Чей брак посмотреть (по умолчанию твой)")
+    async def marriage(self, interaction: discord.Interaction, user: discord.Member = None):
+        member = user or interaction.user
+        partner, since = _alive_partner(interaction.guild, member.id)
+        if not partner:
+            who = "Ты" if member.id == interaction.user.id else f"{member.display_name}"
+            await interaction.response.send_message(
+                f"{who} свободен(на) 💫 Сердце ищет пару — `/marry @ник`.",
+                ephemeral=True,
+            )
+            return
+        days = _days_together(since)
+        date = discord.utils.format_dt(datetime.datetime.fromtimestamp(since), "D")
+        embed = discord.Embed(
+            title="💕 Союз двух сердец",
+            description=(
+                f"{member.mention} 💞 {partner.mention}\n\n"
+                f"Свадьба: {date}\n"
+                f"Вместе уже **{days}** дн."
+            ),
+            color=HEART_COLOR,
+            timestamp=datetime.datetime.now(),
+        )
+        embed.set_footer(text="Уголок для двоих: 💗 · Войти")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="couples", description="Самые крепкие пары сервера 💞")
+    async def couples(self, interaction: discord.Interaction):
+        data = _marriages(interaction.guild.id)
+        seen = set()
+        rows = []
+        for uid, info in data.items():
+            pid = int(info["partner_id"])
+            key = min(int(uid), pid), max(int(uid), pid)
+            if key in seen:
+                continue
+            seen.add(key)
+            a = interaction.guild.get_member(int(uid))
+            b = interaction.guild.get_member(pid)
+            if not a or not b:
+                continue
+            rows.append((float(info.get("since_ts", 0)), a, b))
+        if not rows:
+            await interaction.response.send_message(
+                "Пока никого. Стань первой парой сервера — `/marry @ник` 💍", ephemeral=True
+            )
+            return
+        rows.sort(key=lambda r: r[0])
+        medals = ["🥇", "🥈", "🥉"] + ["💜"] * 7
+        lines = []
+        for i, (since, a, b) in enumerate(rows[:10]):
+            days = _days_together(since)
+            lines.append(f"{medals[i]} {a.mention} 💞 {b.mention} — **{days}** дн.")
+        embed = discord.Embed(
+            title="💞 Самые крепкие пары",
+            description="\n".join(lines),
+            color=HEART_COLOR,
+        )
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="rooms", description="Список активных уголков")
     @app_commands.checks.has_permissions(manage_channels=True)
