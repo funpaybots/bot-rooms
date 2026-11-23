@@ -88,6 +88,35 @@ check("m+m blocked", "Однополые" in rc._marriage_block(male, male), rc.
 check("f+f blocked", "Однополые" in rc._marriage_block(female, female))
 check("no gender blocked", "верифиц" in rc._marriage_block(male, nobody))
 
+# Юбилеи
+check("next milestone 0", rc._next_milestone(0) == 7)
+check("next milestone 7", rc._next_milestone(7) == 30)
+check("next milestone 30", rc._next_milestone(30) == 100)
+check("next milestone 182", rc._next_milestone(182) == 365)
+check("next milestone 365", rc._next_milestone(365) == 730)
+check("next milestone far", rc._next_milestone(365 * 25) is None)
+
+check("reached empty", rc._reached_milestones(29, []) == [7])
+check("reached both", rc._reached_milestones(30, []) == [7, 30])
+check("reached skips done", rc._reached_milestones(30, [7]) == [30])
+check("reached no dup", rc._reached_milestones(30, [7, 30]) == [])
+
+check("milestone text 7", rc._milestone_text(7) == "неделя вместе")
+check("milestone text 100", rc._milestone_text(100) == "100 дней вместе")
+check("milestone text 365", rc._milestone_text(365) == "1 год вместе")
+check("milestone text 730", rc._milestone_text(730) == "2 года вместе")
+check("milestone text 1460", rc._milestone_text(1460) == "4 года вместе")
+
+# Парная комната ищется по паре, порядок не важен
+rc._save_rooms(556, {
+    "100": {"owner_id": 1, "partner_id": 2, "kind": "couple", "text_channel_id": 101},
+    "200": {"owner_id": 3, "kind": "single"},
+})
+vid, info = rc._couple_room_for(556, 2, 1)
+check("couple room found", vid == 100 and info.get("text_channel_id") == 101)
+check("single room not couple", rc._couple_room_for(556, 3, 4)[0] is None)
+check("stranger no room", rc._couple_room_for(556, 5, 6)[0] is None)
+
 # Вьюхи собираются
 class _FakeDiscordMember:
     def __init__(self, uid):
@@ -114,7 +143,7 @@ async def load_cog():
 
 bt = asyncio.run(load_cog())
 names = {c.name for c in bt.tree.get_commands()}
-check("commands", {"my_room", "setup_rooms", "rooms", "marry", "divorce", "marriage", "couples"} <= names, str(sorted(names)))
+check("commands", {"my_room", "setup_rooms", "rooms", "marry", "divorce", "marriage", "couples", "setup_couples"} <= names, str(sorted(names)))
 check("setup", callable(rc.setup))
 
 # Кириллица не сломана

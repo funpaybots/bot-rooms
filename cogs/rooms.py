@@ -5,15 +5,17 @@
 в той же категории с кнопками управления в текстовом канале-панели.
 """
 
-import asyncio
 import datetime
+import logging
 import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from storage import load, save
+
+log = logging.getLogger(__name__)
 
 ROOMS_FILE = "rooms.json"
 SETTINGS_FILE = "settings.json"
@@ -102,6 +104,118 @@ def _remove_marriage(guild_id: int, a: int, b: int):
 
 def _days_together(since_ts: float) -> int:
     return max(0, int((time.time() - since_ts) // 86400))
+
+
+# ── Плюшки для пар ────────────────────────────────────────────────────────────
+
+MARRIAGE_ROLE_NAME = "💍 В браке"
+DEFAULT_COUPLE_LIMIT = 2
+
+# Юбилеи: дни вместе
+MILESTONES = [7, 30, 100, 182] + [365 * k for k in range(1, 21)]
+
+
+def _milestone_text(m: int) -> str:
+    if m == 7:
+        return "неделя вместе"
+    if m == 30:
+        return "месяц вместе"
+    if m == 100:
+        return "100 дней вместе"
+    if m == 182:
+        return "полгода вместе"
+    if m % 365 == 0:
+        years = m // 365
+        word = "год" if years == 1 else ("года" if years in (2, 3, 4) else "лет")
+        return f"{years} {word} вместе"
+    return f"{m} дней вместе"
+
+
+def _next_milestone(days: int):
+    for m in MILESTONES:
+        if m > days:
+            return m
+    return None
+
+
+def _reached_milestones(days: int, done) -> list:
+    """Все юбилеи, которые уже наступили, но ещё не отмечали."""
+    done = {int(d) for d in (done or [])}
+    return [m for m in MILESTONES if m <= days and m not in done]
+
+
+def _couple_room_for(guild_id: int, a_id: int, b_id: int):
+    """(voice_id, info) парной комнаты этой пары или (None, None)."""
+    for ch_id, info in _rooms(guild_id).items():
+        if info.get("kind") != "couple":
+            continue
+        owner = int(info.get("owner_id") or 0)
+        partner = int(info.get("partner_id") or 0)
+        if {owner, partner} == {int(a_id), int(b_id)}:
+            return int(ch_id), info
+    return None, None
+
+
+async def _ensure_marriage_role(guild, role_id=None):
+    """Роль «💍 В браке»: берём настроенную, ищем по имени или создаём."""
+    role = guild.get_role(int(role_id)) if role_id else None
+    if role is not None:
+        return role
+    role = discord.utils.get(getattr(guild, "roles", []), name=MARRIAGE_ROLE_NAME)
+    if role is not None:
+        cfg = _cfg(guild.id)
+        cfg["marriage_role_id"] = role.id
+        _save_cfg(guild.id, cfg)
+        return role
+    try:
+        role = await guild.create_role(
+            name=MARRIAGE_ROLE_NAME,
+            colour=discord.Colour(HEART_COLOR),
+            hoist=False,
+            mentionable=False,
+            reason="Роль для женатых пар",
+        )
+    except (discord.Forbidden, discord.HTTPException) as e:
+        log.warning("Не смог создать роль брака на сервере %s: %s", getattr(guild, "id", "?"), e)
+        return None
+    cfg = _cfg(guild.id)
+    cfg["marriage_role_id"] = role.id
+    _save_cfg(guild.id, cfg)
+    return role
+
+
+async def _give_marriage_role(guild, members):
+    role = await _ensure_marriage_role(guild, _cfg(guild.id).get("marriage_role_id"))
+    if role is None:
+        return
+    for m in members:
+        if m is None or getattr(m, "bot", False):
+            continue
+        if role in getattr(m, "roles", []):
+            continue
+        try:
+            await m.add_roles(role, reason="Свадьба")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
+async def _take_marriage_role(guild, members):
+    cfg = _cfg(guild.id)
+    role_id = cfg.get("marriage_role_id")
+    role = guild.get_role(int(role_id)) if role_id else None
+    if role is None:
+        role = discord.utils.get(getattr(guild, "roles", []), name=MARRIAGE_ROLE_NAME)
+    if role is None:
+        return
+    for m in members:
+        if m is None:
+            continue
+        if role not in getattr(m, "roles", []):
+            continue
+        try:
+            await m.remove_roles(role, reason="Развод")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 def _gender(member):
@@ -198,13 +312,15 @@ class ProposalView(discord.ui.View):
             since_ts = time.time()
             _set_marriage(guild.id, self.proposer.id, self.target.id, since_ts)
             _last_propose.pop((guild.id, self.proposer.id), None)
+            await _give_marriage_role(guild, [fresh_a, fresh_b])
             days = discord.utils.format_dt(datetime.datetime.fromtimestamp(since_ts), "D")
             embed = discord.Embed(
                 title="💍 Свадьба!",
                 description=(
                     f"{self.proposer.mention} и {self.target.mention} теперь пара!\n\n"
                     f"Свадебная дата: {days}\n"
-                    f"У вас есть приватная комната — зайдите в **💗 · Войти** вместе."
+                    f"У вас есть приватная комната — зайдите в **💗 · Войти** вместе.\n"
+                    f"Вам выдана роль **{MARRIAGE_ROLE_NAME}** 💞"
                 ),
                 color=HEART_COLOR,
                 timestamp=datetime.datetime.now(),
@@ -238,6 +354,7 @@ class DivorceView(discord.ui.View):
             await interaction.response.send_message("Развод только по обоюдному... то есть по личной заявке 😅", ephemeral=True)
             return
         _remove_marriage(interaction.guild.id, interaction.user.id, self.partner.id)
+        await _take_marriage_role(interaction.guild, [interaction.user, self.partner])
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title="💔 Развод",
@@ -483,16 +600,124 @@ class Rooms(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @tasks.loop(hours=1)
+    async def _anniversaries(self):
+        for guild in self.bot.guilds:
+            try:
+                await self._check_anniversaries(guild)
+            except Exception:
+                log.exception("Годовщины на сервере %s упали", guild.id)
+
+    @_anniversaries.before_loop
+    async def _before_anniversaries(self):
+        await self.bot.wait_until_ready()
+
+    async def _check_anniversaries(self, guild: discord.Guild):
+        data = _marriages(guild.id)
+        seen = set()
+        changed = False
+        for uid, info in list(data.items()):
+            pid = int(info["partner_id"])
+            key = (min(int(uid), pid), max(int(uid), pid))
+            if key in seen:
+                continue
+            seen.add(key)
+            days = _days_together(float(info.get("since_ts", 0)))
+            reached = _reached_milestones(days, info.get("anniv"))
+            if not reached:
+                continue
+            a = guild.get_member(key[0])
+            b = guild.get_member(key[1])
+            if a is None or b is None:
+                continue
+            mark = sorted({int(d) for d in (info.get("anniv") or [])} | set(reached))
+            for u in key:
+                entry = data.get(str(u))
+                if entry is not None:
+                    entry["anniv"] = mark
+            changed = True
+            await self._announce_anniversary(guild, a, b, max(reached), days)
+        if changed:
+            _save_marriages(guild.id, data)
+
+    async def _announce_anniversary(self, guild, a, b, milestone: int, days: int):
+        embed = discord.Embed(
+            title=f"🥂 {_milestone_text(milestone).capitalize()}!",
+            description=(
+                f"{a.mention} 💞 {b.mention}\n\n"
+                f"Вы вместе уже **{days}** дн. Берегите друг друга 💜"
+            ),
+            color=HEART_COLOR,
+            timestamp=datetime.datetime.now(),
+        )
+        # 1) личный чат пары, 2) канал поздравлений, 3) ЛС
+        _vc_id, room = _couple_room_for(guild.id, a.id, b.id)
+        text_id = room.get("text_channel_id") if room else None
+        text_ch = guild.get_channel(int(text_id)) if text_id else None
+        if text_ch is not None:
+            try:
+                await text_ch.send(embed=embed)
+                return
+            except discord.HTTPException:
+                pass
+        ann_id = int(_cfg(guild.id).get("couple_announce_id") or 0)
+        ann_ch = guild.get_channel(ann_id) if ann_id else None
+        if ann_ch is not None:
+            try:
+                await ann_ch.send(embed=embed)
+                return
+            except discord.HTTPException:
+                pass
+        for m in (a, b):
+            try:
+                await m.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
     @commands.Cog.listener()
     async def on_ready(self):
-        # Восстановить persistent views для всех живых комнат
+        # Годовщины: запускаем раз в час, только после реального старта
+        if not self._anniversaries.is_running():
+            self._anniversaries.start()
+        # Восстановить persistent views для всех живых комнат + вычистить умершие
         data = load(ROOMS_FILE, {})
         for guild_id, rooms in data.items():
-            for ch_id in rooms:
+            guild = self.bot.get_guild(int(guild_id))
+            changed = False
+            for ch_id in list(rooms):
+                info = rooms[ch_id]
                 try:
                     self.bot.add_view(RoomPanel(int(ch_id)))
                 except Exception:
                     pass
+                vc = guild.get_channel(int(ch_id)) if guild else None
+                if vc is not None:
+                    continue
+                # Голосовой комнаты уже нет — убираем запись и парный чат
+                text_id = info.get("text_channel_id")
+                if guild and text_id:
+                    text = guild.get_channel(int(text_id))
+                    if text is not None:
+                        try:
+                            await text.delete(reason="Парная комната пропала")
+                        except discord.HTTPException:
+                            pass
+                rooms.pop(ch_id, None)
+                changed = True
+            if changed:
+                _save_rooms(int(guild_id), rooms)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        """Партнёр ушёл с сервера — брак распадается, роль снимаем."""
+        pair = _partner_of(member.guild.id, member.id)
+        if not pair:
+            return
+        pid, _since = pair
+        _remove_marriage(member.guild.id, member.id, pid)
+        partner = member.guild.get_member(pid)
+        if partner is not None:
+            await _take_marriage_role(member.guild, [partner])
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -598,6 +823,15 @@ class Rooms(commands.Cog):
                             await msg.delete()
                         except (discord.HTTPException, discord.NotFound):
                             pass
+                # Парный текстовый чат живёт вместе с голосовым
+                text_id = info.get("text_channel_id")
+                if text_id:
+                    text_ch = guild.get_channel(int(text_id))
+                    if text_ch is not None:
+                        try:
+                            await text_ch.delete(reason="Гнёздышко опустело")
+                        except discord.HTTPException:
+                            pass
                 # Удалить канал
                 try:
                     await before.channel.delete(reason="Уголок опустел")
@@ -620,6 +854,31 @@ class Rooms(commands.Cog):
                 vc = guild.get_channel(int(ch_id))
                 if vc is None:
                     continue
+                if partner is not None:
+                    # Свадьба случилась после создания комнаты — доподключаем вторую половинку
+                    try:
+                        await vc.set_permissions(
+                            partner, view_channel=True, connect=True, speak=True
+                        )
+                    except discord.HTTPException:
+                        pass
+                    text_id = info.get("text_channel_id")
+                    text_ch = guild.get_channel(int(text_id)) if text_id else None
+                    if text_ch is not None:
+                        try:
+                            await text_ch.set_permissions(
+                                partner,
+                                view_channel=True,
+                                send_messages=True,
+                                read_message_history=True,
+                                attach_files=True,
+                                embed_links=True,
+                            )
+                        except discord.HTTPException:
+                            pass
+                    if str(info.get("partner_id")) != str(partner.id):
+                        info["partner_id"] = partner.id
+                        _save_rooms(guild.id, rooms)
                 try:
                     await member.move_to(vc)
                 except discord.HTTPException:
@@ -631,16 +890,20 @@ class Rooms(commands.Cog):
         if category is None:
             category = None  # без категории — упадёт в корень, но не умрём
 
+        limit = max(2, int(cfg.get("couple_limit") or DEFAULT_COUPLE_LIMIT))
+        make_text = bool(cfg.get("couple_text_chat", True))
+
         if partner:
-            ch_name = f"💗 {member.display_name} & {partner.display_name}"[:100]
+            base = f"{member.display_name} & {partner.display_name}"
         else:
-            ch_name = f"💗 {member.display_name}"[:100]
+            base = member.display_name
+        ch_name = f"💗 {base}"[:100]
 
         try:
             vc = await guild.create_voice_channel(
                 ch_name,
                 category=category,
-                user_limit=2,
+                user_limit=limit,
                 reason=f"Парная комната {member}",
             )
             # Приватная: только владелец (+ партнёр) видят и заходят
@@ -655,10 +918,50 @@ class Rooms(commands.Cog):
         except discord.HTTPException:
             return
 
+        # Общий текстовый чат на двоих — рядом с голосовым
+        text_ch = None
+        if make_text:
+            owner_perms = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+                manage_messages=True,
+            )
+            partner_perms = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+            )
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                member: owner_perms,
+            }
+            if partner:
+                overwrites[partner] = partner_perms
+            try:
+                text_ch = await guild.create_text_channel(
+                    f"💬 {base}"[:100],
+                    category=category,
+                    overwrites=overwrites,
+                    topic=f"Личный чат пары — {base}"[:1024],
+                    reason=f"Парный чат {member}",
+                )
+            except discord.HTTPException:
+                text_ch = None
+
         try:
             await member.move_to(vc)
         except discord.HTTPException:
             await vc.delete()
+            if text_ch is not None:
+                try:
+                    await text_ch.delete()
+                except discord.HTTPException:
+                    pass
             return
 
         rooms = _rooms(guild.id)
@@ -667,21 +970,41 @@ class Rooms(commands.Cog):
             "owner_name": str(member),
             "kind": "couple",
             "partner_id": (partner.id if partner else None),
+            "text_channel_id": (text_ch.id if text_ch else None),
             "created_at": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
         }
         _save_rooms(guild.id, rooms)
 
+        if text_ch is not None:
+            try:
+                msg = await text_ch.send(
+                    embed=discord.Embed(
+                        title="💌 Ваш личный чат",
+                        description=(
+                            f"Здесь видите только вы двое. Обсуждайте что угодно — никто не подслушает.\n"
+                            f"`/marriage` — сколько вы уже вместе и когда ближайший юбилей."
+                        ),
+                        color=HEART_COLOR,
+                    )
+                )
+                await msg.pin(reason="Приветствие парного чата")
+            except discord.HTTPException:
+                pass
 
         if partner:
+            together = _partner_of(guild.id, member.id)
+            days = _days_together(together[1]) if together else 0
             desc = (
-                f"Ваш гнёздышко: {vc.mention}\n"
-                f"Комната видна только вам двоим (и стаффу).\n"
-                f"Вы вместе {_days_together(_partner_of(guild.id, member.id)[1])} дн. 💕"
+                f"Ваше гнёздышко: {vc.mention}\n"
+                + (f"Личный чат: {text_ch.mention}\n" if text_ch else "")
+                + f"Комната видна только вам двоим (и стаффу).\n"
+                f"Вы вместе {days} дн. 💕"
             )
         else:
             desc = (
                 f"Ваша комната: {vc.mention}\n"
-                f"Она скрыта от остальных. Позовите вторую половинку через настройки канала,\n"
+                + (f"Личный чат: {text_ch.mention}\n" if text_ch else "")
+                + f"Она скрыта от остальных. Позовите вторую половинку через настройки канала,\n"
                 f"а чтобы она появилась сама — женитесь: `/marry @ник` 💍"
             )
         embed = discord.Embed(
@@ -694,18 +1017,28 @@ class Rooms(commands.Cog):
         try:
             await member.send(embed=embed, view=view)
         except discord.Forbidden:
-            # ЛС закрыты — молча оставляем панель доступной через /my_room
-            pass
+            # ЛС закрыты — постим панель в канал пар (или в общую панель)
+            fallback_id = int(cfg.get("couple_panel_id") or cfg.get("panel_channel_id") or 0)
+            fallback = guild.get_channel(fallback_id) if fallback_id else None
+            if fallback is not None:
+                try:
+                    msg = await fallback.send(content=member.mention, embed=embed, view=view)
+                    rooms[str(vc.id)]["panel_msg_id"] = msg.id
+                    rooms[str(vc.id)]["panel_ch_id"] = fallback.id
+                    _save_rooms(guild.id, rooms)
+                except discord.HTTPException:
+                    pass
 
     # ── /my_room ──────────────────────────────────────────────────────────────
 
     @app_commands.command(name="my_room", description="Получить панель управления своим уголком")
     async def my_room(self, interaction: discord.Interaction):
         rooms = _rooms(interaction.guild.id)
-        # Найти комнату где владелец — этот участник
+        # Комната, где этот участник владелец или вторая половинка
+        me = str(interaction.user.id)
         my = next(
             ((ch_id, info) for ch_id, info in rooms.items()
-             if str(info.get("owner_id")) == str(interaction.user.id)),
+             if me in (str(info.get("owner_id")), str(info.get("partner_id")))),
             None,
         )
         if not my:
@@ -716,12 +1049,22 @@ class Rooms(commands.Cog):
         if not vc:
             await interaction.response.send_message("Уголок не найден — возможно уже удалён.", ephemeral=True)
             return
-        embed = discord.Embed(
-            title="🏠 Твой уголок",
-            description=f"Твой канал: {vc.mention}\nИспользуй кнопки ниже для управления.",
-            color=discord.Color.from_str("#a9c9ff"),
-        )
-        embed.set_footer(text=f"Владелец: {interaction.user.display_name}")
+        couple = info.get("kind") == "couple"
+        if couple:
+            title = "💜 Ваше гнёздышко"
+            desc = f"Ваш канал: {vc.mention}\n"
+            text_id = info.get("text_channel_id")
+            text_ch = interaction.guild.get_channel(int(text_id)) if text_id else None
+            if text_ch is not None:
+                desc += f"Личный чат: {text_ch.mention}\n"
+            desc += "Кнопки ниже — управление комнатой (доступны обоим)."
+            color = HEART_COLOR
+        else:
+            title = "🏠 Твой уголок"
+            desc = f"Твой канал: {vc.mention}\nИспользуй кнопки ниже для управления."
+            color = discord.Color.from_str("#a9c9ff")
+        embed = discord.Embed(title=title, description=desc, color=color)
+        embed.set_footer(text=f"Владелец: {info.get('owner_name') or interaction.user.display_name}")
         await interaction.response.send_message(embed=embed, view=RoomPanel(vc.id), ephemeral=True)
 
     # ── /setup_rooms ──────────────────────────────────────────────────────────
@@ -772,6 +1115,89 @@ class Rooms(commands.Cog):
             value=(f"{ct_ch.mention} → {cc_ch.mention}" if ct_ch and cc_ch else "не настроено"),
             inline=False,
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── /setup_couples ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="setup_couples",
+        description="Настроить парные комнаты и плюшки для пар 💜",
+    )
+    @app_commands.describe(
+        trigger="Канал-триггер: вошёл — получил гнёздышко",
+        category="Категория для парных комнат (по умолчанию — категория триггера)",
+        limit="Лимит участников в парной комнате (по умолчанию 2)",
+        text_chat="Создавать паре общий текстовый чат",
+        marriage_role="Роль для женатых (по умолчанию «💍 В браке»)",
+        panel="Куда кидать панель, если у пары закрыты ЛС",
+        announce="Канал для поздравлений с годовщинами",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_couples(
+        self,
+        interaction: discord.Interaction,
+        trigger: discord.VoiceChannel = None,
+        category: discord.CategoryChannel = None,
+        limit: app_commands.Range[int, 2, 25] = None,
+        text_chat: bool = None,
+        marriage_role: discord.Role = None,
+        panel: discord.TextChannel = None,
+        announce: discord.TextChannel = None,
+    ):
+        cfg = _cfg(interaction.guild.id)
+        if trigger is not None:
+            cfg["couple_trigger_id"] = trigger.id
+        if category is not None:
+            cfg["couple_category_id"] = category.id
+        elif trigger is not None and trigger.category_id:
+            cfg["couple_category_id"] = trigger.category_id
+        if limit is not None:
+            cfg["couple_limit"] = int(limit)
+        if text_chat is not None:
+            cfg["couple_text_chat"] = bool(text_chat)
+        if marriage_role is not None:
+            cfg["marriage_role_id"] = marriage_role.id
+        if panel is not None:
+            cfg["couple_panel_id"] = panel.id
+        if announce is not None:
+            cfg["couple_announce_id"] = announce.id
+        _save_cfg(interaction.guild.id, cfg)
+
+        g = interaction.guild
+        ct = int(cfg.get("couple_trigger_id") or 0)
+        cc = int(cfg.get("couple_category_id") or 0)
+        ct_ch = g.get_channel(ct) if ct else None
+        cc_ch = g.get_channel(cc) if cc else None
+        role_id = int(cfg.get("marriage_role_id") or 0)
+        role = g.get_role(role_id) if role_id else None
+        an = int(cfg.get("couple_announce_id") or 0)
+        ann_ch = g.get_channel(an) if an else None
+        lim = int(cfg.get("couple_limit") or DEFAULT_COUPLE_LIMIT)
+        text_on = bool(cfg.get("couple_text_chat", True))
+
+        embed = discord.Embed(
+            title="💜 Парные комнаты",
+            color=HEART_COLOR,
+            description=(
+                "Пара заходит в канал-триггер — получает приватную комнату и чат на двоих."
+                if ct_ch
+                else "⚠️ Триггер не задан — парные комнаты выключены. Укажи `trigger`."
+            ),
+        )
+        embed.add_field(name="Триггер", value=ct_ch.mention if ct_ch else "—", inline=True)
+        embed.add_field(name="Категория", value=cc_ch.mention if cc_ch else "—", inline=True)
+        embed.add_field(name="Лимит", value=str(lim), inline=True)
+        embed.add_field(name="Текст-чат пары", value="вкл" if text_on else "выкл", inline=True)
+        embed.add_field(
+            name="Роль брака",
+            value=role.mention if role else f"{MARRIAGE_ROLE_NAME} (создам при первой свадьбе)",
+            inline=True,
+        )
+        pn = int(cfg.get("couple_panel_id") or 0)
+        pn_ch = g.get_channel(pn) if pn else None
+        embed.add_field(name="Панель (если ЛС закрыты)", value=pn_ch.mention if pn_ch else "—", inline=True)
+        embed.add_field(name="Канал годовщин", value=ann_ch.mention if ann_ch else "ЛС/чат пары", inline=True)
+        embed.set_footer(text="Плюшки: роль брака, общий чат, годовщины — /marriage")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── Свадьбы ───────────────────────────────────────────────────────────────
@@ -855,17 +1281,23 @@ class Rooms(commands.Cog):
             return
         days = _days_together(since)
         date = discord.utils.format_dt(datetime.datetime.fromtimestamp(since), "D")
+        nxt = _next_milestone(days)
+        if nxt is not None:
+            when = f"До юбилея «{_milestone_text(nxt)}»: **{nxt - days}** дн."
+        else:
+            when = "Все юбилеи пройдены — вы легенда сервера 🏆"
         embed = discord.Embed(
             title="💕 Союз двух сердец",
             description=(
                 f"{member.mention} 💞 {partner.mention}\n\n"
                 f"Свадьба: {date}\n"
-                f"Вместе уже **{days}** дн."
+                f"Вместе уже **{days}** дн.\n\n"
+                f"{when}"
             ),
             color=HEART_COLOR,
             timestamp=datetime.datetime.now(),
         )
-        embed.set_footer(text="Уголок для двоих: 💗 · Войти")
+        embed.set_footer(text="Уголок для двоих: 💗 · Войти · Годовщины отмечаем сами")
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="couples", description="Самые крепкие пары сервера 💞")
