@@ -330,6 +330,20 @@ check("dm: bad cid no crash", rc.RoomPanel._voice_ch(dm_itx, "not-a-number") is 
 rc._owner_of = orig_owner_of
 check("panel helpers avoid interaction.guild", "interaction.client.get_channel" in src)
 
+# ── /setup_couples не должен умирать по 3-секундному таймауту интеракции ──────
+
+i_defer = src.find("await interaction.response.defer(ephemeral=True)")
+i_hide = src.find("fixed = await _hide_existing_couple_rooms")
+i_followup = src.find("await interaction.followup.send(embed=embed, ephemeral=True)")
+check("setup_couples defers first", 0 < i_defer < i_hide, f"defer={i_defer} hide={i_hide}")
+check("setup_couples answers via followup", i_hide < i_followup, f"followup={i_followup}")
+i_weddings = src.find("# ── Свадьбы")
+setup_couples_src = src[i_defer:i_weddings]
+check(
+    "no direct response in setup_couples tail",
+    "interaction.response.send_message" not in setup_couples_src,
+)
+
 dv = rc.DivorceView(_FakeDiscordMember(1), _FakeDiscordMember(2))
 check("divorce buttons", len(dv.children) == 2)
 

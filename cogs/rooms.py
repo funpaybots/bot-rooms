@@ -1301,6 +1301,10 @@ class Rooms(commands.Cog):
         panel: discord.TextChannel = None,
         announce: discord.TextChannel = None,
     ):
+        # Откладываем ответ сразу: перепрятывание комнат ниже — это запрос к API на
+        # каждую роль сервера, и без defer Discord убивает интеракцию за 3 секунды.
+        await interaction.response.defer(ephemeral=True)
+
         cfg = _cfg(interaction.guild.id)
         if trigger is not None:
             cfg["couple_trigger_id"] = trigger.id
@@ -1368,7 +1372,7 @@ class Rooms(commands.Cog):
         if fixed:
             embed.add_field(name="Перепрятано старых комнат", value=str(fixed), inline=True)
         embed.set_footer(text="Плюшки: роль брака, общий чат, годовщины — /marriage")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── Свадьбы ───────────────────────────────────────────────────────────────
 
