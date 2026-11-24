@@ -255,12 +255,59 @@ def _alive_partner(guild: discord.Guild, user_id: int):
     return member, since_ts
 
 
-class ProposalView(discord.ui.View):
-    def __init__(self, proposer: discord.Member, target: discord.Member):
-        super().__init__(timeout=120)
+class ProposalSession:
+    """Одно предложение: сообщение в канале + ЛС цели. Кнопки живут вместе."""
+
+    TIMEOUT = 120
+
+    def __init__(self, proposer: discord.Member, target: discord.Member, guild: discord.Guild):
         self.proposer = proposer
         self.target = target
+        self.guild = guild
         self.answered = False
+        self.messages: list[discord.Message] = []
+        self.views: list["ProposalView"] = []
+
+    def attach(self, message: discord.Message, view: "ProposalView"):
+        self.messages.append(message)
+        self.views.append(view)
+
+    def stop_all(self):
+        for view in self.views:
+            view.stop()
+
+    async def edit_all(self, embed: discord.Embed):
+        """Правит все сообщения предложения и убирает кнопки (канал + ЛС)."""
+        for msg in list(self.messages):
+            try:
+                await msg.edit(embed=embed, view=None)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+    def expire_embed(self) -> discord.Embed:
+        name = getattr(self.target, "display_name", "цель")
+        return discord.Embed(
+            title="⏳ Время вышло",
+            description=(
+                f"{self.target.mention} не ответил(а) за 2 минуты — предложение сгорело 💔\n"
+                f"Попробовать снова: `/marry @{name}`"
+            ),
+            color=discord.Color.dark_grey(),
+        )
+
+    async def expire(self):
+        """Таймаут: закрываем везде, чтобы кнопки не выглядели живыми."""
+        if self.answered:
+            return
+        self.answered = True
+        self.stop_all()
+        await self.edit_all(self.expire_embed())
+
+
+class ProposalView(discord.ui.View):
+    def __init__(self, session: ProposalSession):
+        super().__init__(timeout=session.TIMEOUT)
+        self.session = session
 
     @discord.ui.button(label="Согласен 💍", style=discord.ButtonStyle.success)
     async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -271,53 +318,59 @@ class ProposalView(discord.ui.View):
         await self._answer(interaction, False)
 
     async def _answer(self, interaction: discord.Interaction, accepted: bool):
-        if interaction.user.id != self.target.id:
+        session = self.session
+        if interaction.user.id != session.target.id:
             await interaction.response.send_message("Это предложение не тебе 😏", ephemeral=True)
             return
-        if self.answered:
+        if session.answered:
             await interaction.response.defer()
             return
-        self.answered = True
-        self.stop()
 
-        guild = interaction.guild
+        session.answered = True
+        session.stop_all()
+        # Отвечать можно и из канала, и из ЛС — правим оба сообщения вручную
+        await interaction.response.defer()
+
+        guild = session.guild
+        proposer, target = session.proposer, session.target
+
         if accepted:
             # К моменту нажатия кто-то из них мог успеть жениться
-            p1, _ = _alive_partner(guild, self.proposer.id)
-            p2, _ = _alive_partner(guild, self.target.id)
+            p1, _ = _alive_partner(guild, proposer.id)
+            p2, _ = _alive_partner(guild, target.id)
             if p1 or p2:
-                await interaction.response.edit_message(
-                    embed=discord.Embed(
+                await session.edit_all(
+                    discord.Embed(
                         title="😔 Не сложилось",
                         description="Кто-то из вас уже успел жениться на другом.",
                         color=discord.Color.red(),
-                    ),
-                    view=None,
+                    )
                 )
+                _last_propose.pop((guild.id, proposer.id), None)
                 return
             # Пол мог поменяться/роли сняться, пока висело предложение
-            fresh_a = guild.get_member(self.proposer.id) or self.proposer
-            fresh_b = guild.get_member(self.target.id) or self.target
+            fresh_a = guild.get_member(proposer.id) or proposer
+            fresh_b = guild.get_member(target.id) or target
             gender_block = _marriage_block(fresh_a, fresh_b)
             if gender_block:
-                await interaction.response.edit_message(
-                    embed=discord.Embed(
+                await session.edit_all(
+                    discord.Embed(
                         title="😔 Не сложилось",
                         description=gender_block,
                         color=discord.Color.red(),
-                    ),
-                    view=None,
+                    )
                 )
+                _last_propose.pop((guild.id, proposer.id), None)
                 return
             since_ts = time.time()
-            _set_marriage(guild.id, self.proposer.id, self.target.id, since_ts)
-            _last_propose.pop((guild.id, self.proposer.id), None)
+            _set_marriage(guild.id, proposer.id, target.id, since_ts)
+            _last_propose.pop((guild.id, proposer.id), None)
             await _give_marriage_role(guild, [fresh_a, fresh_b])
             days = discord.utils.format_dt(datetime.datetime.fromtimestamp(since_ts), "D")
             embed = discord.Embed(
                 title="💍 Свадьба!",
                 description=(
-                    f"{self.proposer.mention} и {self.target.mention} теперь пара!\n\n"
+                    f"{proposer.mention} и {target.mention} теперь пара!\n\n"
                     f"Свадебная дата: {days}\n"
                     f"У вас есть приватная комната — зайдите в **💗 · Войти** вместе.\n"
                     f"Вам выдана роль **{MARRIAGE_ROLE_NAME}** 💞"
@@ -326,20 +379,19 @@ class ProposalView(discord.ui.View):
                 timestamp=datetime.datetime.now(),
             )
             embed.set_footer(text="Горишь ярко ✨ /marriage — узнать, сколько вы вместе")
-            await interaction.response.edit_message(embed=embed, view=None)
+            await session.edit_all(embed)
         else:
-            await interaction.response.edit_message(
-                embed=discord.Embed(
+            await session.edit_all(
+                discord.Embed(
                     title="💔 Отказ",
-                    description=f"{self.target.mention} отказал {self.proposer.mention}. Может в другой раз.",
+                    description=f"{target.mention} отказал {proposer.mention}. Может в другой раз.",
                     color=discord.Color.red(),
-                ),
-                view=None,
+                )
             )
-        _last_propose.pop((guild.id, self.proposer.id), None)
+            _last_propose.pop((guild.id, proposer.id), None)
 
     async def on_timeout(self):
-        self.answered = True
+        await self.session.expire()
 
 
 class DivorceView(discord.ui.View):
@@ -1276,7 +1328,57 @@ class Rooms(commands.Cog):
             color=HEART_COLOR,
             timestamp=datetime.datetime.now(),
         )
-        await interaction.response.send_message(embed=embed, view=ProposalView(interaction.user, user))
+
+        session = ProposalSession(interaction.user, user, guild)
+        channel_view = ProposalView(session)
+        await interaction.response.send_message(embed=embed, view=channel_view)
+        try:
+            channel_msg = await interaction.original_response()
+        except discord.HTTPException:
+            channel_msg = None
+        if channel_msg is not None:
+            session.attach(channel_msg, channel_view)
+
+        # Дублируем в ЛС: в шумном канале предложение легко пропустить
+        dm_embed = discord.Embed(
+            title="💍 Тебе сделали предложение",
+            description=(
+                f"**{interaction.user.display_name}** делает тебе предложение "
+                f"на сервере **{guild.name}**.\n\n"
+                "У тебя 2 минуты. Ответить можно прямо здесь — "
+                "сообщение в канале обновится само."
+            ),
+            color=HEART_COLOR,
+            timestamp=datetime.datetime.now(),
+        )
+        dm_view = ProposalView(session)
+        try:
+            dm_msg = await user.send(embed=dm_embed, view=dm_view)
+        except discord.Forbidden:
+            # ЛС закрыты — кладём копию в канал пар, если он настроен
+            cfg = _cfg(guild.id)
+            fb_id = int(cfg.get("couple_panel_id") or cfg.get("panel_channel_id") or 0)
+            fallback = guild.get_channel(fb_id) if fb_id else None
+            posted = False
+            if fallback is not None:
+                try:
+                    fb_msg = await fallback.send(
+                        content=user.mention, embed=dm_embed, view=dm_view
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+                else:
+                    session.attach(fb_msg, dm_view)
+                    posted = True
+            if not posted:
+                await interaction.followup.send(
+                    f"⚠️ У {user.mention} закрыты ЛС — предложение видно только в канале.",
+                    ephemeral=True,
+                )
+        except discord.HTTPException:
+            pass
+        else:
+            session.attach(dm_msg, dm_view)
 
     @app_commands.command(name="divorce", description="Развестись 💔")
     async def divorce(self, interaction: discord.Interaction):

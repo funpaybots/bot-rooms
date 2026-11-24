@@ -155,10 +155,59 @@ check("refusal has marry hint", "marry" in refusal_text.lower(), refusal_text[:4
 class _FakeDiscordMember:
     def __init__(self, uid):
         self.id = uid
+        self.display_name = f"user{uid}"
+        self.mention = f"<@{uid}>"
 
 
-pv = rc.ProposalView(_FakeDiscordMember(1), _FakeDiscordMember(2))
+class _FakeProposalMsg:
+    def __init__(self):
+        self.edits = []
+
+    async def edit(self, **kw):
+        self.edits.append(kw)
+
+
+prop_session = rc.ProposalSession(
+    _FakeDiscordMember(1), _FakeDiscordMember(2), _FakeProposalMsg()
+)
+pv = rc.ProposalView(prop_session)
 check("proposal buttons", len(pv.children) == 2)
+check("proposal timeout from session", pv.timeout == rc.ProposalSession.TIMEOUT)
+
+msg_channel = _FakeProposalMsg()
+msg_dm = _FakeProposalMsg()
+prop_session.attach(msg_channel, pv)
+prop_session.attach(msg_dm, rc.ProposalView(prop_session))
+asyncio.run(prop_session.expire())
+check(
+    "expire edits channel+dm",
+    len(msg_channel.edits) == 1 and len(msg_dm.edits) == 1,
+    f"{len(msg_channel.edits)}/{len(msg_dm.edits)}",
+)
+check("expire drops buttons", msg_channel.edits[0].get("view") is None)
+check("expire embed", "Время вышло" in msg_channel.edits[0]["embed"].title)
+asyncio.run(prop_session.expire())
+check("expire once", len(msg_channel.edits) == 1 and len(msg_dm.edits) == 1)
+
+# Ответ в ЛС должен править и сообщение в канале, и ЛС
+prop_session2 = rc.ProposalSession(
+    _FakeDiscordMember(1), _FakeDiscordMember(2), _FakeProposalMsg()
+)
+m_c, m_d = _FakeProposalMsg(), _FakeProposalMsg()
+prop_session2.attach(m_c, rc.ProposalView(prop_session2))
+prop_session2.attach(m_d, rc.ProposalView(prop_session2))
+prop_session2.answered = True
+asyncio.run(prop_session2.edit_all(prop_session2.expire_embed()))
+check("edit_all hits both", len(m_c.edits) == 1 and len(m_d.edits) == 1)
+check("edit_all strips view", m_d.edits[0].get("view") is None)
+
+src = open("cogs/rooms.py", encoding="utf-8").read()
+check("marry sends DM", "await user.send(embed=dm_embed, view=dm_view)" in src)
+check(
+    "marry falls back to couple panel",
+    'cfg.get("couple_panel_id") or cfg.get("panel_channel_id")' in src,
+)
+
 dv = rc.DivorceView(_FakeDiscordMember(1), _FakeDiscordMember(2))
 check("divorce buttons", len(dv.children) == 2)
 
