@@ -29,6 +29,10 @@ DEFAULT_PANEL_CH   = 1573423257724395575   # 🔑--мой-уголок
 COLOR = 0xA9C9FF
 HEART_COLOR = 0xFF9AD5
 
+# Метка сборки: видна в футере /setup_couples. Если её в ответе нет —
+# на хосте крутится старый код, рестарт/обновление не прошли.
+BUILD = "25.11.2"
+
 # Роли пола сервера Roet — брак только ♂ + ♀
 MALE_ROLE_ID = 1573422846485594193
 FEMALE_ROLE_ID = 1573422843574886453
@@ -1371,7 +1375,7 @@ class Rooms(commands.Cog):
         embed.add_field(name="Приватность", value=privacy, inline=False)
         if fixed:
             embed.add_field(name="Перепрятано старых комнат", value=str(fixed), inline=True)
-        embed.set_footer(text="Плюшки: роль брака, общий чат, годовщины — /marriage")
+        embed.set_footer(text=f"Плюшки: роль брака, общий чат, годовщины — /marriage · сборка {BUILD}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── Свадьбы ───────────────────────────────────────────────────────────────
