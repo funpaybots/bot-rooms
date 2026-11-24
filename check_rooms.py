@@ -208,6 +208,77 @@ check(
     'cfg.get("couple_panel_id") or cfg.get("panel_channel_id")' in src,
 )
 
+
+# ── Приватность парных комнат: прячем от стаффа ───────────────────────────────
+
+class _Perms:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def __getattr__(self, item):
+        return False
+
+
+class _PrivRole:
+    def __init__(self, rid, name="role", managed=False, default=False, **perms):
+        self.id = rid
+        self.name = name
+        self.mention = f"<@&{rid}>"
+        self.managed = managed
+        self._default = default
+        self.permissions = _Perms(**perms)
+
+    def is_default(self):
+        return self._default
+
+
+class _PrivGuild:
+    def __init__(self, roles):
+        self.id = 4242
+        self.roles = roles
+
+
+class _PrivChannel:
+    def __init__(self):
+        self.perms = {}
+
+    async def set_permissions(self, role, **kw):
+        self.perms[role.id] = kw
+
+
+mod_role = _PrivRole(1, "Модератор", manage_messages=True)
+helper_role = _PrivRole(2, "Хелпер", moderate_members=True)
+admin_role = _PrivRole(3, "Админ", administrator=True)
+everyone_role = _PrivRole(0, "@everyone", default=True, manage_messages=True)
+bot_role = _PrivRole(5, "Bot", managed=True, administrator=True)
+plain_role = _PrivRole(6, "Участник")
+priv_guild = _PrivGuild([everyone_role, mod_role, helper_role, admin_role, bot_role, plain_role])
+
+found = {r.id for r in rc._staff_like_roles(priv_guild)}
+check("staff roles detected", found == {1, 2, 3}, str(sorted(found)))
+check("everyone skipped", 0 not in found)
+check("managed bot role skipped", 5 not in found)
+check("plain role skipped", 6 not in found)
+
+vch = _PrivChannel()
+hidden = asyncio.run(rc._hide_from_staff(vch, priv_guild, voice=True))
+check("voice hidden from staff", hidden == 3, str(hidden))
+check(
+    "voice deny view+connect",
+    vch.perms[1]["view_channel"] is False and vch.perms[1]["connect"] is False,
+)
+check("voice did not touch plain role", 6 not in vch.perms)
+
+tch = _PrivChannel()
+asyncio.run(rc._hide_from_staff(tch, priv_guild, voice=False))
+check(
+    "text deny view only",
+    tch.perms[3]["view_channel"] is False and "connect" not in tch.perms[3],
+)
+check("text chat overwrites staff", "_staff_like_roles(guild)" in src)
+check("old rooms re-hidden", "_hide_existing_couple_rooms" in src and "await _hide_existing_couple_rooms" in src)
+check("no staff line in couple text", "и стаффу" not in src)
+
 dv = rc.DivorceView(_FakeDiscordMember(1), _FakeDiscordMember(2))
 check("divorce buttons", len(dv.children) == 2)
 

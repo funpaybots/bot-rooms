@@ -156,6 +156,69 @@ def _couple_room_for(guild_id: int, a_id: int, b_id: int):
     return None, None
 
 
+# ── Приватность парных комнат ─────────────────────────────────────────────────
+
+# Права, по которым роль считаем стаффом. От таких ролей комнату пары прячем,
+# иначе модератор может зайти в чужой «личный» чат и комментировать.
+_STAFF_PERMS = (
+    "manage_messages",
+    "manage_channels",
+    "moderate_members",
+    "kick_members",
+    "ban_members",
+    "administrator",
+)
+
+
+def _staff_like_roles(guild) -> list:
+    """Роли модерации и админов. @everyone, роли ботов и нашу роль не трогаем."""
+    me = getattr(guild, "me", None)
+    bot_roles = set(getattr(me, "roles", []) or [])
+    roles = []
+    for role in getattr(guild, "roles", []):
+        if role.is_default() or getattr(role, "managed", False) or role in bot_roles:
+            continue
+        perms = role.permissions
+        if any(getattr(perms, p, False) for p in _STAFF_PERMS):
+            roles.append(role)
+    return roles
+
+
+async def _hide_from_staff(channel, guild, *, voice: bool) -> int:
+    """Закрывает канал от стафф-ролей. Возвращает, скольким ролям закрыл."""
+    hidden = 0
+    for role in _staff_like_roles(guild):
+        try:
+            if voice:
+                await channel.set_permissions(role, view_channel=False, connect=False)
+            else:
+                await channel.set_permissions(role, view_channel=False)
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+        hidden += 1
+    return hidden
+
+
+async def _hide_existing_couple_rooms(guild) -> int:
+    """Прогнать приватность по уже созданным комнатам пар."""
+    fixed = 0
+    for ch_id, info in _rooms(guild.id).items():
+        if info.get("kind") != "couple":
+            continue
+        try:
+            vc = guild.get_channel(int(ch_id))
+        except (TypeError, ValueError):
+            continue
+        if vc is not None:
+            await _hide_from_staff(vc, guild, voice=True)
+            fixed += 1
+        t_id = int(info.get("text_channel_id") or 0)
+        text_ch = guild.get_channel(t_id) if t_id else None
+        if text_ch is not None:
+            await _hide_from_staff(text_ch, guild, voice=False)
+    return fixed
+
+
 async def _ensure_marriage_role(guild, role_id=None):
     """Роль «💍 В браке»: берём настроенную, ищем по имени или создаём."""
     role = guild.get_role(int(role_id)) if role_id else None
@@ -971,6 +1034,8 @@ class Rooms(commands.Cog):
             )
             if partner:
                 await vc.set_permissions(partner, view_channel=True, connect=True, speak=True)
+            # Стаффу тут делать нечего: права категории иначе пускают их внутрь
+            await _hide_from_staff(vc, guild, voice=True)
         except discord.HTTPException:
             return
 
@@ -998,6 +1063,9 @@ class Rooms(commands.Cog):
             }
             if partner:
                 overwrites[partner] = partner_perms
+            # Сразу закрываем и от стаффа, без окна видимости
+            for staff_role in _staff_like_roles(guild):
+                overwrites[staff_role] = discord.PermissionOverwrite(view_channel=False)
             try:
                 text_ch = await guild.create_text_channel(
                     f"💬 {base}"[:100],
@@ -1053,7 +1121,7 @@ class Rooms(commands.Cog):
             desc = (
                 f"Ваше гнёздышко: {vc.mention}\n"
                 + (f"Личный чат: {text_ch.mention}\n" if text_ch else "")
-                + f"Комната видна только вам двоим (и стаффу).\n"
+                + f"Комната скрыта от всех, кроме вас двоих.\n"
                 f"Вы вместе {days} дн. 💕"
             )
         else:
@@ -1244,6 +1312,9 @@ class Rooms(commands.Cog):
             cfg["couple_announce_id"] = announce.id
         _save_cfg(interaction.guild.id, cfg)
 
+        # Старые комнаты тоже прячем: права категории иначе пускают стафф внутрь
+        fixed = await _hide_existing_couple_rooms(interaction.guild)
+
         g = interaction.guild
         ct = int(cfg.get("couple_trigger_id") or 0)
         cc = int(cfg.get("couple_category_id") or 0)
@@ -1278,6 +1349,17 @@ class Rooms(commands.Cog):
         pn_ch = g.get_channel(pn) if pn else None
         embed.add_field(name="Панель (если ЛС закрыты)", value=pn_ch.mention if pn_ch else "—", inline=True)
         embed.add_field(name="Канал годовщин", value=ann_ch.mention if ann_ch else "ЛС/чат пары", inline=True)
+        staff_roles = _staff_like_roles(g)
+        if staff_roles:
+            privacy = "комнаты скрыты от стаффа: " + ", ".join(
+                r.mention for r in staff_roles[:5]
+            )
+            privacy += "\n_Админы видят всё — это ограничение Discord._"
+        else:
+            privacy = "комнаты скрыты от @everyone (стафф-ролей по правам не нашёл)"
+        embed.add_field(name="Приватность", value=privacy, inline=False)
+        if fixed:
+            embed.add_field(name="Перепрятано старых комнат", value=str(fixed), inline=True)
         embed.set_footer(text="Плюшки: роль брака, общий чат, годовщины — /marriage")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
