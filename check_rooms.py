@@ -254,20 +254,20 @@ bot_role = _PrivRole(5, "Bot", managed=True, administrator=True)
 plain_role = _PrivRole(6, "Участник")
 priv_guild = _PrivGuild([everyone_role, mod_role, helper_role, admin_role, bot_role, plain_role])
 
-found = {r.id for r in rc._staff_like_roles(priv_guild)}
-check("staff roles detected", found == {1, 2, 3}, str(sorted(found)))
+found = {r.id for r in rc._roles_to_hide(priv_guild)}
+check("all roles hidden", found == {1, 2, 3, 6}, str(sorted(found)))
 check("everyone skipped", 0 not in found)
 check("managed bot role skipped", 5 not in found)
-check("plain role skipped", 6 not in found)
+check("admin role included", 3 in found)
 
 vch = _PrivChannel()
 hidden = asyncio.run(rc._hide_from_staff(vch, priv_guild, voice=True))
-check("voice hidden from staff", hidden == 3, str(hidden))
+check("voice hidden from all roles", hidden == 4, str(hidden))
 check(
     "voice deny view+connect",
     vch.perms[1]["view_channel"] is False and vch.perms[1]["connect"] is False,
 )
-check("voice did not touch plain role", 6 not in vch.perms)
+check("plain role also hidden", vch.perms.get(6, {}).get("view_channel") is False)
 
 tch = _PrivChannel()
 asyncio.run(rc._hide_from_staff(tch, priv_guild, voice=False))
@@ -275,7 +275,7 @@ check(
     "text deny view only",
     tch.perms[3]["view_channel"] is False and "connect" not in tch.perms[3],
 )
-check("text chat overwrites staff", "_staff_like_roles(guild)" in src)
+check("text chat overwrites all roles", "_roles_to_hide(guild)" in src)
 check("old rooms re-hidden", "_hide_existing_couple_rooms" in src and "await _hide_existing_couple_rooms" in src)
 check("no staff line in couple text", "и стаффу" not in src)
 

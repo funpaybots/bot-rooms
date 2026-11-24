@@ -158,36 +158,29 @@ def _couple_room_for(guild_id: int, a_id: int, b_id: int):
 
 # ── Приватность парных комнат ─────────────────────────────────────────────────
 
-# Права, по которым роль считаем стаффом. От таких ролей комнату пары прячем,
-# иначе модератор может зайти в чужой «личный» чат и комментировать.
-_STAFF_PERMS = (
-    "manage_messages",
-    "manage_channels",
-    "moderate_members",
-    "kick_members",
-    "ban_members",
-    "administrator",
-)
+def _roles_to_hide(guild) -> list:
+    """Все роли, которым нечего делать в комнате пары.
 
-
-def _staff_like_roles(guild) -> list:
-    """Роли модерации и админов. @everyone, роли ботов и нашу роль не трогаем."""
+    Категория «Мурмир» обычно пускает стафф внутрь, и права категории
+    наследуются любой ролью. Поэтому закрываем канал от ВСЕХ ролей, а не
+    только от тех, у кого есть права модерации: «Комьюнити Менеджер» или
+    «dev» иначе остаются с доступом. @everyone, роли ботов и нашу роль
+    не трогаем — они и так не должны/не могут.
+    """
     me = getattr(guild, "me", None)
     bot_roles = set(getattr(me, "roles", []) or [])
     roles = []
     for role in getattr(guild, "roles", []):
         if role.is_default() or getattr(role, "managed", False) or role in bot_roles:
             continue
-        perms = role.permissions
-        if any(getattr(perms, p, False) for p in _STAFF_PERMS):
-            roles.append(role)
+        roles.append(role)
     return roles
 
 
 async def _hide_from_staff(channel, guild, *, voice: bool) -> int:
-    """Закрывает канал от стафф-ролей. Возвращает, скольким ролям закрыл."""
+    """Закрывает канал от всех ролей. Возвращает, скольким ролям закрыл."""
     hidden = 0
-    for role in _staff_like_roles(guild):
+    for role in _roles_to_hide(guild):
         try:
             if voice:
                 await channel.set_permissions(role, view_channel=False, connect=False)
@@ -1064,8 +1057,8 @@ class Rooms(commands.Cog):
             if partner:
                 overwrites[partner] = partner_perms
             # Сразу закрываем и от стаффа, без окна видимости
-            for staff_role in _staff_like_roles(guild):
-                overwrites[staff_role] = discord.PermissionOverwrite(view_channel=False)
+            for hidden_role in _roles_to_hide(guild):
+                overwrites[hidden_role] = discord.PermissionOverwrite(view_channel=False)
             try:
                 text_ch = await guild.create_text_channel(
                     f"💬 {base}"[:100],
@@ -1349,14 +1342,13 @@ class Rooms(commands.Cog):
         pn_ch = g.get_channel(pn) if pn else None
         embed.add_field(name="Панель (если ЛС закрыты)", value=pn_ch.mention if pn_ch else "—", inline=True)
         embed.add_field(name="Канал годовщин", value=ann_ch.mention if ann_ch else "ЛС/чат пары", inline=True)
-        staff_roles = _staff_like_roles(g)
-        if staff_roles:
-            privacy = "комнаты скрыты от стаффа: " + ", ".join(
-                r.mention for r in staff_roles[:5]
-            )
-            privacy += "\n_Админы видят всё — это ограничение Discord._"
-        else:
-            privacy = "комнаты скрыты от @everyone (стафф-ролей по правам не нашёл)"
+        hidden_roles = _roles_to_hide(g)
+        privacy = (
+            f"комнаты закрыты от всех ролей ({len(hidden_roles)}), видят только двое"
+            if hidden_roles
+            else "ролей не нашёл — комнаты закрыты только от @everyone"
+        )
+        privacy += "\n_Админы видят всё — это ограничение Discord._"
         embed.add_field(name="Приватность", value=privacy, inline=False)
         if fixed:
             embed.add_field(name="Перепрятано старых комнат", value=str(fixed), inline=True)
