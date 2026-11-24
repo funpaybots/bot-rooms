@@ -507,12 +507,26 @@ class RoomPanel(discord.ui.View):
 
     @staticmethod
     def _voice_ch(interaction: discord.Interaction, cid: str):
-        return interaction.guild.get_channel(int(cid))
+        """Канал берём из кэша бота: панель могут нажать и в ЛС, а там guild = None."""
+        try:
+            return interaction.client.get_channel(int(cid))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
-    def _check_owner(interaction: discord.Interaction, voice_ch: discord.VoiceChannel) -> bool:
-        owner_id = _owner_of(interaction.guild.id, voice_ch.id)
-        return interaction.user.id == owner_id or interaction.user.guild_permissions.administrator
+    def _guild_of(interaction: discord.Interaction, voice_ch):
+        """Гильдия канала, а не interaction.guild — в ЛС его нет."""
+        return getattr(voice_ch, "guild", None) or interaction.guild
+
+    @classmethod
+    def _check_owner(cls, interaction: discord.Interaction, voice_ch) -> bool:
+        guild = cls._guild_of(interaction, voice_ch)
+        if guild is None:
+            return False
+        if interaction.user.id == _owner_of(guild.id, voice_ch.id):
+            return True
+        member = guild.get_member(interaction.user.id)
+        return bool(member and member.guild_permissions.administrator)
 
     # 1. Закрыть / открыть
     @discord.ui.button(label="🔒 Закрыть/открыть", style=discord.ButtonStyle.secondary, custom_id="room_lock_0", row=0)
@@ -521,10 +535,10 @@ class RoomPanel(discord.ui.View):
         vc = self._voice_ch(interaction, cid)
         if not vc or not self._check_owner(interaction, vc):
             await interaction.response.send_message("Нет прав.", ephemeral=True); return
-        ow = vc.overwrites_for(interaction.guild.default_role)
+        ow = vc.overwrites_for(vc.guild.default_role)
         currently_locked = ow.connect is False
         ow.connect = None if currently_locked else False
-        await vc.set_permissions(interaction.guild.default_role, overwrite=ow)
+        await vc.set_permissions(vc.guild.default_role, overwrite=ow)
         state = "открыт 🔓" if currently_locked else "закрыт 🔒"
         await interaction.response.send_message(f"Канал {state}.", ephemeral=True)
 
@@ -569,10 +583,10 @@ class RoomPanel(discord.ui.View):
         vc = self._voice_ch(interaction, cid)
         if not vc or not self._check_owner(interaction, vc):
             await interaction.response.send_message("Нет прав.", ephemeral=True); return
-        ow = vc.overwrites_for(interaction.guild.default_role)
+        ow = vc.overwrites_for(vc.guild.default_role)
         currently_hidden = ow.view_channel is False
         ow.view_channel = None if currently_hidden else False
-        await vc.set_permissions(interaction.guild.default_role, overwrite=ow)
+        await vc.set_permissions(vc.guild.default_role, overwrite=ow)
         state = "виден всем 👀" if currently_hidden else "скрыт от остальных 🤫"
         await interaction.response.send_message(f"Канал {state}.", ephemeral=True)
 
@@ -651,7 +665,8 @@ class KickSelectView(discord.ui.View):
 
     async def _on_select(self, interaction: discord.Interaction):
         member_id = int(interaction.data["values"][0])
-        member = interaction.guild.get_member(member_id)
+        guild = self.vc.guild
+        member = guild.get_member(member_id)
         if member and member.voice and member.voice.channel == self.vc:
             await member.move_to(None, reason=f"Выгнан владельцем {interaction.user}")
             await interaction.response.send_message(f"{member.display_name} выгнан.", ephemeral=True)

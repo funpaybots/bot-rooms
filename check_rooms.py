@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 
 import asyncio
 
@@ -278,6 +279,56 @@ check(
 check("text chat overwrites all roles", "_roles_to_hide(guild)" in src)
 check("old rooms re-hidden", "_hide_existing_couple_rooms" in src and "await _hide_existing_couple_rooms" in src)
 check("no staff line in couple text", "и стаффу" not in src)
+
+
+# ── Панель в ЛС: interaction.guild там None, кнопки не должны падать ──────────
+
+class _PanelChannel:
+    def __init__(self, guild, cid):
+        self.guild = guild
+        self.id = cid
+
+
+class _PanelGuild:
+    def __init__(self, gid):
+        self.id = gid
+        self._channels = {}
+        self.members_by_id = {}
+
+    def get_channel(self, cid):
+        return self._channels.get(cid)
+
+    def get_member(self, uid):
+        return self.members_by_id.get(uid)
+
+
+class _PanelClient:
+    def __init__(self, channels):
+        self._channels = {c.id: c for c in channels}
+
+    def get_channel(self, cid):
+        return self._channels.get(cid)
+
+
+class _PanelUser:
+    def __init__(self, uid):
+        self.id = uid
+
+
+panel_guild = _PanelGuild(777)
+panel_ch = _PanelChannel(panel_guild, 555)
+panel_guild._channels[555] = panel_ch
+dm_itx = SimpleNamespace(client=_PanelClient([panel_ch]), guild=None, user=_PanelUser(999))
+stranger_itx = SimpleNamespace(client=_PanelClient([panel_ch]), guild=None, user=_PanelUser(1000))
+
+orig_owner_of = rc._owner_of
+rc._owner_of = lambda gid, chid: 999 if (gid, chid) == (777, 555) else 0
+check("dm: channel resolved via cache", rc.RoomPanel._voice_ch(dm_itx, "555") is panel_ch)
+check("dm: owner passes", rc.RoomPanel._check_owner(dm_itx, panel_ch) is True)
+check("dm: stranger denied", rc.RoomPanel._check_owner(stranger_itx, panel_ch) is False)
+check("dm: bad cid no crash", rc.RoomPanel._voice_ch(dm_itx, "not-a-number") is None)
+rc._owner_of = orig_owner_of
+check("panel helpers avoid interaction.guild", "interaction.client.get_channel" in src)
 
 dv = rc.DivorceView(_FakeDiscordMember(1), _FakeDiscordMember(2))
 check("divorce buttons", len(dv.children) == 2)
