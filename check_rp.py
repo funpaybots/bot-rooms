@@ -45,18 +45,29 @@ check("no leftover placeholders", "{a}" not in embed.description and "{b}" not i
 check("embed footer", "Roet" in (embed.footer.text or ""))
 check("ordinary color", embed.color.value != rp.HEART_COLOR)
 
-embed_sp, _ = rp.build_embed("обнять", "Маша", "Петя", spouse=True)
+embed_sp, _ = rp.build_embed("обнять", "Маша", "Петя", spouse=True, target_mention="<@222>")
 check("spouse pink", embed_sp.color.value == rp.HEART_COLOR)
 check("spouse line", "💞" in embed_sp.description or "❤️" in embed_sp.description)
+check("spouse mentions partner", "<@222>" in embed_sp.description)
+check(
+    "spouse no leftover placeholders",
+    "{a}" not in embed_sp.description and "{b}" not in embed_sp.description,
+)
+check("spouse lines need mention", all("{b}" in line for line in rp.SPOUSE_LINES))
+check("playful lines need mention", all("{b}" in line for line in rp.PLAYFUL_SPOUSE_LINES))
+check(
+    "spouse line without mention stays readable",
+    "Петя" in rp.build_embed("обнять", "Маша", "Петя", spouse=True)[0].description,
+)
 
-embed_play, _ = rp.build_embed("пнуть", "Маша", "Петя", spouse=True)
+embed_play, _ = rp.build_embed("пнуть", "Маша", "Петя", spouse=True, target_mention="<@222>")
 check(
     "playful spouse line",
-    any(line in embed_play.description for line in rp.PLAYFUL_SPOUSE_LINES),
+    any(line.format(a="Маша", b="<@222>") in embed_play.description for line in rp.PLAYFUL_SPOUSE_LINES),
 )
 check(
     "romantic spouse line",
-    any(line in embed_sp.description for line in rp.SPOUSE_LINES),
+    any(line.format(a="Маша", b="<@222>") in embed_sp.description for line in rp.SPOUSE_LINES),
 )
 check("playful set", rp.PLAYFUL <= set(rp.ACTIONS))
 
@@ -155,6 +166,7 @@ class _FakeMember:
         self.id = uid
         self.display_name = name
         self.bot = bot
+        self.mention = f"<@{uid}>"
 
 
 fake = rp.RP(None)
@@ -168,11 +180,28 @@ async def _no_api(_action):
 orig_fetch = rp.fetch_image_url
 rp.fetch_image_url = _no_api
 itx = _FakeInteraction()
-asyncio.run(fake._run(itx, "обнять", _FakeMember()))
+target_member = _FakeMember()
+asyncio.run(fake._run(itx, "обнять", target_member))
 sent = itx.response.calls[0]
 check("local file attached", "file" in sent and sent["file"].filename == "hug.gif")
 check("local file embed image", sent["embed"].image.url == "attachment://hug.gif")
 check("local file auto-delete", sent.get("delete_after") == rp.DELETE_AFTER)
+check(
+    "mentions limited to target",
+    isinstance(sent.get("allowed_mentions"), discord.AllowedMentions)
+    and sent["allowed_mentions"].users == [target_member]
+    and sent["allowed_mentions"].everyone is False,
+)
+
+# Супруги: розовый цвет + комплимент с упоминанием
+orig_is_spouse = fake._is_spouse
+fake._is_spouse = lambda *_a: True
+itx_sp = _FakeInteraction(uid=1, name="Маша")
+asyncio.run(fake._run(itx_sp, "обнять", _FakeMember(uid=2, name="Петя")))
+sent_sp = itx_sp.response.calls[0]
+check("spouse runtime pink", sent_sp["embed"].color.value == rp.HEART_COLOR)
+check("spouse runtime mention", "<@2>" in sent_sp["embed"].description)
+fake._is_spouse = orig_is_spouse
 
 # API-фолбэк: файла нет — берём ссылку
 

@@ -164,19 +164,22 @@ ACTIONS = {
     ),
 }
 
+# Строчки для супругов: комплимент второй половинке с упоминанием @.
+# {a} — имя того, кто действует, {b} — упоминание того, на кого направлено.
 SPOUSE_LINES = (
-    "💞 Вторая половинка — самые тёплые объятия",
-    "💞 Вы ведь супруги, у вас всё по-настоящему",
-    "❤️ Это ваша вторая половинка",
+    "💞 {b}, ты — самое тёплое, что есть у {a}",
+    "❤️ {b}, с тобой у {a} всё по-настоящему",
+    "💞 {b}, {a} ни на кого тебя не променяет",
+    "❤️ {b}, ты лучшее, что случилось с {a}",
 )
 
 # Для пинков и щекотки романтичная строчка выглядит странно — своя.
 PLAYFUL = {"пнуть", "шлёпнуть", "стукнуть", "укусить", "ткнуть", "пощекотать"}
 
 PLAYFUL_SPOUSE_LINES = (
-    "💞 Супруги тоже балуются",
-    "💞 Любовь-любовью, а пинок по расписанию",
-    "❤️ Вторая половинка всё прощает",
+    "💞 {b}, {a} пинает только самых любимых",
+    "💞 {b}, ты у {a} любимый человек даже после пинка",
+    "❤️ {b}, {a} всё равно тебя обожает",
 )
 
 SELF_LINES = (
@@ -232,11 +235,17 @@ def find_local_image(filename: str, suffix: str = "") -> str:
 
 
 def build_embed(
-    action: str, actor_name: str, target_name: str, *, spouse: bool = False,
+    action: str,
+    actor_name: str,
+    target_name: str,
+    *,
+    spouse: bool = False,
+    target_mention: str = "",
 ) -> tuple:
     """Чистая сборка эмбеда: (embed, имя локального файла).
 
-    Картинку навешивает вызывающий код: локальный файл или ссылку из API.
+    target_mention — «<@id>» для супружеской строчки, чтобы вторая половинка
+    получила уведомление. Картинку навешивает вызывающий код.
     """
     filename, _endpoint, title, color, variants = ACTIONS[action]
     text = random.choice(variants).format(a=actor_name, b=target_name)
@@ -247,7 +256,9 @@ def build_embed(
     )
     if spouse:
         lines = PLAYFUL_SPOUSE_LINES if action in PLAYFUL else SPOUSE_LINES
-        embed.description += "\n\n" + random.choice(lines)
+        embed.description += "\n\n" + random.choice(lines).format(
+            a=actor_name, b=target_mention or target_name
+        )
     embed.set_footer(text="❤️ Roet Deluxe")
     return embed, filename
 
@@ -331,7 +342,10 @@ class RP(commands.Cog):
             interaction.user.display_name,
             target.display_name,
             spouse=spouse,
+            target_mention=target.mention,
         )
+        # Пингуем только того, на кого направлено действие, — никаких @everyone.
+        mentions = discord.AllowedMentions(users=[target], everyone=False)
 
         path = find_local_image(filename, pair_suffix(interaction.user, target))
         if path:
@@ -341,13 +355,16 @@ class RP(commands.Cog):
                 embed=embed,
                 file=discord.File(path, filename=name),
                 delete_after=DELETE_AFTER,
+                allowed_mentions=mentions,
             )
             return
 
         link = await fetch_image_url(action)
         if link:
             embed.set_image(url=link)
-        await interaction.response.send_message(embed=embed, delete_after=DELETE_AFTER)
+        await interaction.response.send_message(
+            embed=embed, delete_after=DELETE_AFTER, allowed_mentions=mentions
+        )
 
     # ── ошибки ────────────────────────────────────────────────────────────────
 
