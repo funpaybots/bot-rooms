@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
-"""РП-команды для пар: обнять, поцеловать, погладить, приобнять, угостить,
-помахать, чмок.
+"""РП-команды: обнять, поцеловать, погладить и ещё полтора десятка действий.
 
 Картинки: сначала ищем локальный файл в assets/rp/ (если положишь свои гифки —
 бот возьмёт их), иначе тянем гифку из бесплатного nekos.best. Если и он молчит,
 команда всё равно сработает — просто текстом, без картинки.
 
+Под каждым сообщением есть кнопка «Ответить взаимностью» — её может нажать
+только получатель. Сообщения удаляются через 5 минут, есть общая РП-пауза.
+Модерация может выключить РП в конкретном канале (/рп-выкл, /рп-вкл).
+
 Если оба собеседника женаты друг на друге, эмбед становится розовым
-и добавляется строчка про вторую половинку.
+и добавляется комплимент с упоминанием второй половинки.
 """
 
 import logging
@@ -19,6 +22,8 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from storage import load, save
 
 log = logging.getLogger(__name__)
 
@@ -162,6 +167,46 @@ ACTIONS = {
             "{a} не отпускает руку {b}",
         ),
     ),
+    "унести": (
+        "carry.gif", "carry", "🫳 На руках", HEART_COLOR,
+        (
+            "{a} берёт {b} на руки",
+            "{a} уносит {b} в закат",
+            "{a} несёт {b} на руках",
+        ),
+    ),
+    "прижать": (
+        "kabedon.gif", "kabedon", "🧱 Прижать", HEART_COLOR,
+        (
+            "{a} прижимает {b} к стене",
+            "{a} загоняет {b} в угол",
+            "{a} припирает {b} к стене и улыбается",
+        ),
+    ),
+    "дразнить": (
+        "baka.gif", "baka", "😝 Дразнить", PLAY_COLOR,
+        (
+            "{a} дразнит {b}",
+            "{a} показывает {b} язык",
+            "{a} обзывает {b} бака и хихикает",
+        ),
+    ),
+    "подмигнуть": (
+        "wink.gif", "wink", "😉 Подмигнуть", CALM_COLOR,
+        (
+            "{a} подмигивает {b}",
+            "{a} игриво подмигивает {b}",
+            "{a} шлёт {b} подмигивание",
+        ),
+    ),
+    "танцевать": (
+        "dance.gif", "dance", "💃 Танец", CALM_COLOR,
+        (
+            "{a} приглашает {b} на танец",
+            "{a} танцует с {b}",
+            "{a} кружит {b} в танце",
+        ),
+    ),
 }
 
 # Строчки для супругов: комплимент второй половинке с упоминанием @.
@@ -174,13 +219,67 @@ SPOUSE_LINES = (
 )
 
 # Для пинков и щекотки романтичная строчка выглядит странно — своя.
-PLAYFUL = {"пнуть", "шлёпнуть", "стукнуть", "укусить", "ткнуть", "пощекотать"}
+PLAYFUL = {
+    "пнуть", "шлёпнуть", "стукнуть", "укусить", "ткнуть", "пощекотать", "дразнить",
+}
 
 PLAYFUL_SPOUSE_LINES = (
     "💞 {b}, {a} пинает только самых любимых",
     "💞 {b}, ты у {a} любимый человек даже после пинка",
     "❤️ {b}, {a} всё равно тебя обожает",
 )
+
+# Ответное действие для кнопки «в ответ»: глагол в 3-м лице.
+REPLY_VERBS = {
+    "обнять": "обнимает",
+    "поцеловать": "целует",
+    "погладить": "гладит",
+    "приобнять": "приобнимает",
+    "угостить": "угощает",
+    "помахать": "машет",
+    "чмок": "чмокает",
+    "пнуть": "пинает",
+    "шлёпнуть": "шлёпает",
+    "стукнуть": "стукает",
+    "укусить": "кусает",
+    "ткнуть": "тыкает",
+    "пощекотать": "щекочет",
+    "пять": "даёт пять",
+    "держаться": "берёт за руку",
+    "унести": "уносит",
+    "прижать": "прижимает",
+    "дразнить": "дразнит",
+    "подмигнуть": "подмигивает",
+    "танцевать": "приглашает на танец",
+}
+
+# ── каналы, где РП выключены (модерация) ─────────────────────────────────────
+RP_CHANNELS_FILE = "rp_channels.json"
+
+
+def disabled_channels(guild_id: int) -> list:
+    data = load(RP_CHANNELS_FILE, {})
+    return list(data.get(str(guild_id)) or [])
+
+
+def is_disabled(guild_id: int, channel_id: int) -> bool:
+    return channel_id in disabled_channels(guild_id)
+
+
+def set_disabled(guild_id: int, channel_id: int, disabled: bool) -> list:
+    """Включить/выключить РП в канале. Возвращает актуальный список."""
+    data = load(RP_CHANNELS_FILE, {})
+    current = list(data.get(str(guild_id)) or [])
+    if disabled and channel_id not in current:
+        current.append(channel_id)
+    elif not disabled and channel_id in current:
+        current.remove(channel_id)
+    if current:
+        data[str(guild_id)] = current
+    else:
+        data.pop(str(guild_id), None)
+    save(RP_CHANNELS_FILE, data)
+    return current
 
 SELF_LINES = (
     "Сам себя не обнимешь… хотя почему бы и нет. Выбери кого-то другого.",
@@ -264,6 +363,56 @@ def build_embed(
     return embed, filename
 
 
+def build_mutual_embed(action: str, base_description: str, actor_mention: str, target_mention: str):
+    """Ответ «взаимно»: тот же эмбед + строчка про ответное действие."""
+    verb = REPLY_VERBS.get(action, "отвечает взаимностью")
+    line = f"💞 {target_mention} {verb} {actor_mention} в ответ"
+    embed = discord.Embed(
+        title=ACTIONS[action][2],
+        description=f"{base_description}\n\n{line}",
+        color=HEART_COLOR,
+    )
+    embed.set_footer(text="❤️ Roet Deluxe")
+    return embed
+
+
+class ReplyView(discord.ui.View):
+    """Кнопка «Ответить взаимностью» — нажать может только получатель."""
+
+    def __init__(self, action: str, actor, target):
+        super().__init__(timeout=None)  # живёт, пока живо сообщение
+        self.action = action
+        self.actor = actor
+        self.target = target
+
+    @discord.ui.button(label="Ответить взаимностью", style=discord.ButtonStyle.primary, emoji="💞")
+    async def reply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message(
+                "Кнопка не твоя, но порыв засчитан 🙂", ephemeral=True
+            )
+            return
+        old = interaction.message.embeds[0] if interaction.message.embeds else None
+        if old is None:
+            await interaction.response.send_message("Эмбед уже уехал.", ephemeral=True)
+            return
+        embed = build_mutual_embed(
+            self.action,
+            old.description or "",
+            self.actor.mention,
+            self.target.mention,
+        )
+        if old.image and old.image.url:
+            embed.set_image(url=old.image.url)
+        await interaction.response.edit_message(
+            embed=embed,
+            view=None,
+            allowed_mentions=discord.AllowedMentions(
+                users=[self.actor, self.target], everyone=False
+            ),
+        )
+
+
 def parse_nekos_payload(data) -> str:
     """Вытащить ссылку на гифку из ответа nekos.best. Пустая строка — не подходит."""
     results = data.get("results") if isinstance(data, dict) else None
@@ -327,6 +476,13 @@ class RP(commands.Cog):
         return bool(partner and partner.id == b_id)
 
     async def _run(self, interaction: discord.Interaction, action: str, target: discord.Member):
+        if interaction.guild_id is not None and interaction.channel_id is not None:
+            if is_disabled(interaction.guild_id, interaction.channel_id):
+                await interaction.response.send_message(
+                    "В этом канале РП выключены — тут не обнимаются.", ephemeral=True
+                )
+                return
+
         if getattr(target, "bot", False):
             await interaction.response.send_message(random.choice(BOT_LINES), ephemeral=True)
             return
@@ -351,6 +507,9 @@ class RP(commands.Cog):
             users=[interaction.user, target], everyone=False
         )
 
+        # Кнопка ответа — только для обычного (не эфемерного) сообщения.
+        view = ReplyView(action, interaction.user, target)
+
         path = find_local_image(filename, pair_suffix(interaction.user, target))
         if path:
             name = os.path.basename(path)
@@ -360,6 +519,7 @@ class RP(commands.Cog):
                 file=discord.File(path, filename=name),
                 delete_after=DELETE_AFTER,
                 allowed_mentions=mentions,
+                view=view,
             )
             return
 
@@ -367,7 +527,10 @@ class RP(commands.Cog):
         if link:
             embed.set_image(url=link)
         await interaction.response.send_message(
-            embed=embed, delete_after=DELETE_AFTER, allowed_mentions=mentions
+            embed=embed,
+            delete_after=DELETE_AFTER,
+            allowed_mentions=mentions,
+            view=view,
         )
 
     # ── ошибки ────────────────────────────────────────────────────────────────
@@ -480,6 +643,72 @@ class RP(commands.Cog):
     @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
     async def handhold(self, interaction: discord.Interaction, user: discord.Member):
         await self._run(interaction, "держаться", user)
+
+    # ── ещё немного романтики ─────────────────────────────────────────────────
+
+    @app_commands.command(name="унести", description="Взять кого-то на руки 🫳")
+    @app_commands.describe(user="Кого унести")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def carry(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "унести", user)
+
+    @app_commands.command(name="прижать", description="Прижать кого-то к стене 🧱")
+    @app_commands.describe(user="Кого прижать")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def kabedon(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "прижать", user)
+
+    @app_commands.command(name="дразнить", description="Подразнить кого-то 😝")
+    @app_commands.describe(user="Кого дразнить")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def tease(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "дразнить", user)
+
+    @app_commands.command(name="подмигнуть", description="Подмигнуть кому-то 😉")
+    @app_commands.describe(user="Кому подмигнуть")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def wink(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "подмигнуть", user)
+
+    @app_commands.command(name="танцевать", description="Пригласить на танец 💃")
+    @app_commands.describe(user="С кем танцевать")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def dance(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "танцевать", user)
+
+    # ── выключение РП в канале (модерация) ────────────────────────────────────
+
+    @app_commands.command(name="рп-выкл", description="Выключить РП-команды в канале 🔇")
+    @app_commands.describe(channel="Канал (по умолчанию — текущий)")
+    @app_commands.default_permissions(manage_channels=True)
+    async def rp_off(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        await self._toggle(interaction, channel, disable=True)
+
+    @app_commands.command(name="рп-вкл", description="Включить РП-команды обратно 🔊")
+    @app_commands.describe(channel="Канал (по умолчанию — текущий)")
+    @app_commands.default_permissions(manage_channels=True)
+    async def rp_on(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        await self._toggle(interaction, channel, disable=False)
+
+    async def _toggle(self, interaction: discord.Interaction, channel, *, disable: bool):
+        if interaction.guild is None:
+            await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            return
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if perms is not None and not perms.manage_channels:
+            await interaction.response.send_message(
+                "Нужны права «Управление каналами».", ephemeral=True
+            )
+            return
+        target_ch = channel or interaction.channel
+        if target_ch is None:
+            await interaction.response.send_message("Не понял канал.", ephemeral=True)
+            return
+        set_disabled(interaction.guild_id, target_ch.id, disable)
+        verb = "выключены" if disable else "включены"
+        await interaction.response.send_message(
+            f"РП-команды {verb} в {target_ch.mention}.", ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):

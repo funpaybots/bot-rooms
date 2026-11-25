@@ -28,6 +28,7 @@ def check(name, cond, extra=""):
 EXPECTED = {
     "обнять", "поцеловать", "погладить", "приобнять", "угостить", "помахать", "чмок",
     "пнуть", "шлёпнуть", "стукнуть", "укусить", "ткнуть", "пощекотать", "пять", "держаться",
+    "унести", "прижать", "дразнить", "подмигнуть", "танцевать",
 }
 
 check("actions", set(rp.ACTIONS) == EXPECTED, str(sorted(rp.ACTIONS)))
@@ -86,6 +87,39 @@ check(
     any(line.format(a="Маша", b="<@222>") in embed_sp.description for line in rp.SPOUSE_LINES),
 )
 check("playful set", rp.PLAYFUL <= set(rp.ACTIONS))
+check("reply verbs cover actions", set(rp.REPLY_VERBS) == set(rp.ACTIONS))
+check("playful includes teasing", "дразнить" in rp.PLAYFUL)
+
+# ── ответ «взаимно» ──────────────────────────────────────────────────────────
+
+mutual = rp.build_mutual_embed(
+    "обнять", "<@111> крепко обнимает <@222>", "<@111>", "<@222>"
+)
+check("mutual keeps action", "обнимает" in mutual.description)
+check("mutual replies", "в ответ" in mutual.description)
+check("mutual mentions both", "<@111>" in mutual.description and "<@222>" in mutual.description)
+check("mutual pink", mutual.color.value == rp.HEART_COLOR)
+check("mutual title", mutual.title == rp.ACTIONS["обнять"][2])
+
+mutual_kick = rp.build_mutual_embed("пнуть", "текст", "<@1>", "<@2>")
+check("mutual kick verb", "пинает" in mutual_kick.description)
+
+# ── каналы, где РП выключены ─────────────────────────────────────────────────
+
+_fake_store = {}
+rp.load = lambda name, default: dict(_fake_store.get(name, default))
+rp.save = lambda name, data: _fake_store.__setitem__(name, dict(data))
+
+check("channel enabled by default", rp.is_disabled(1, 10) is False)
+rp.set_disabled(1, 10, True)
+check("channel disabled", rp.is_disabled(1, 10) is True)
+check("other channel fine", rp.is_disabled(1, 11) is False)
+check("other guild fine", rp.is_disabled(2, 10) is False)
+rp.set_disabled(1, 10, True)
+check("disable twice no dupes", rp.disabled_channels(1) == [10])
+rp.set_disabled(1, 10, False)
+check("channel re-enabled", rp.is_disabled(1, 10) is False)
+check("empty guild removed", "1" not in _fake_store.get(rp.RP_CHANNELS_FILE, {}))
 
 # ── разбор ответа nekos.best ──────────────────────────────────────────────────
 
@@ -165,6 +199,9 @@ class _Sent:
     async def send_message(self, content=None, **kw):
         self.calls.append({"content": content, **kw})
 
+    async def edit_message(self, **kw):
+        self.calls.append({"edit": True, **kw})
+
     def is_done(self):
         return False
 
@@ -174,6 +211,7 @@ class _FakeInteraction:
         self.response = _Sent()
         self.guild = None
         self.guild_id = 4242
+        self.channel_id = 555
         self.user = SimpleNamespace(
             id=uid, display_name=name, mention=f"<@{uid}>"
         )
@@ -294,6 +332,52 @@ check(
     itx6.response.calls and "подождут" in str(itx6.response.calls[0].get("content")),
 )
 
+# Канал с выключенными РП
+rp.set_disabled(4242, 555, True)
+itx_off = _FakeInteraction()
+asyncio.run(fake._run(itx_off, "обнять", _FakeMember()))
+check(
+    "disabled channel refuses",
+    itx_off.response.calls and itx_off.response.calls[0].get("ephemeral") is True,
+)
+rp.set_disabled(4242, 555, False)
+
+# Кнопка «ответить взаимностью»
+view = rp.ReplyView(
+    "обнять", _FakeMember(uid=1, name="Маша"), _FakeMember(uid=2, name="Петя")
+)
+base_embed, _ = rp.build_embed(
+    "обнять", "Маша", "Петя", actor_mention="<@1>", target_mention="<@2>"
+)
+base_embed.set_image(url="https://example.com/hug.gif")
+
+
+class _BtnInteraction:
+    def __init__(self, uid, embeds):
+        self.user = SimpleNamespace(id=uid)
+        self.response = _Sent()
+        self.message = SimpleNamespace(embeds=embeds)
+
+
+itx_stranger = _BtnInteraction(uid=99, embeds=[base_embed])
+asyncio.run(view.reply.callback(itx_stranger))
+check("stranger can't reply", itx_stranger.response.calls[0].get("ephemeral") is True)
+check("stranger makes no edit", not any(c.get("edit") for c in itx_stranger.response.calls))
+
+itx_target = _BtnInteraction(uid=2, embeds=[base_embed])
+asyncio.run(view.reply.callback(itx_target))
+edit_call = itx_target.response.calls[0]
+check("target reply edits message", edit_call.get("edit") is True)
+check(
+    "target reply is mutual",
+    "в ответ" in (edit_call.get("embed").description or ""),
+)
+check("target reply removes button", edit_call.get("view") is None)
+check(
+    "target reply keeps image",
+    edit_call.get("embed").image.url == base_embed.image.url,
+)
+
 # ── регистрация команд ────────────────────────────────────────────────────────
 
 
@@ -305,7 +389,13 @@ async def load_cog():
 
 bt = asyncio.run(load_cog())
 names = {c.name for c in bt.tree.get_commands()}
-check("commands registered", names == EXPECTED, str(sorted(names)))
+check("commands registered", EXPECTED <= names, str(sorted(names)))
+check("toggle commands registered", names - EXPECTED == {"рп-вкл", "рп-выкл"}, str(sorted(names - EXPECTED)))
+toggles = {c.name: c for c in bt.tree.get_commands() if c.name in ("рп-вкл", "рп-выкл")}
+check(
+    "toggles need manage_channels",
+    all(c.default_permissions and c.default_permissions.manage_channels for c in toggles.values()),
+)
 
 src = open(os.path.join(os.path.dirname(rp.__file__), "rp.py"), encoding="utf-8").read()
 check("cooldowns", src.count("cooldown(1, 3.0") == len(EXPECTED))
