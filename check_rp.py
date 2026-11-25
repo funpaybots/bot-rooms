@@ -25,7 +25,10 @@ def check(name, cond, extra=""):
         fails.append(name)
 
 
-EXPECTED = {"обнять", "поцеловать", "погладить", "приобнять", "угостить", "помахать", "чмок"}
+EXPECTED = {
+    "обнять", "поцеловать", "погладить", "приобнять", "угостить", "помахать", "чмок",
+    "пнуть", "шлёпнуть", "стукнуть", "укусить", "ткнуть", "пощекотать", "пять", "держаться",
+}
 
 check("actions", set(rp.ACTIONS) == EXPECTED, str(sorted(rp.ACTIONS)))
 for key, (filename, endpoint, title, color, variants) in rp.ACTIONS.items():
@@ -45,6 +48,17 @@ check("ordinary color", embed.color.value != rp.HEART_COLOR)
 embed_sp, _ = rp.build_embed("обнять", "Маша", "Петя", spouse=True)
 check("spouse pink", embed_sp.color.value == rp.HEART_COLOR)
 check("spouse line", "💞" in embed_sp.description or "❤️" in embed_sp.description)
+
+embed_play, _ = rp.build_embed("пнуть", "Маша", "Петя", spouse=True)
+check(
+    "playful spouse line",
+    any(line in embed_play.description for line in rp.PLAYFUL_SPOUSE_LINES),
+)
+check(
+    "romantic spouse line",
+    any(line in embed_sp.description for line in rp.SPOUSE_LINES),
+)
+check("playful set", rp.PLAYFUL <= set(rp.ACTIONS))
 
 # ── разбор ответа nekos.best ──────────────────────────────────────────────────
 

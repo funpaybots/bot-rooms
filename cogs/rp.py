@@ -28,6 +28,7 @@ RP_DIR = os.path.join(BASE_DIR, "assets", "rp")
 HEART_COLOR = 0xFF9AD5
 CALM_COLOR = 0xA9C9FF
 GIFT_COLOR = 0xF0B46A
+PLAY_COLOR = 0xFFB86B
 
 NEKOS_API = "https://nekos.best/api/v2/{endpoint}"
 USER_AGENT = "RoetDeluxe/1.0 (+https://github.com/funpaybots/bot-rooms)"
@@ -97,12 +98,85 @@ ACTIONS = {
             "{a} ловит и отправляет {b} воздушный поцелуй",
         ),
     ),
+    "пнуть": (
+        "kick.gif", "kick", "🦵 Пинок", PLAY_COLOR,
+        (
+            "{a} легонько пинает {b}",
+            "{a} отвешивает {b} дружеский пинок",
+            "{a} пинает {b} по-дружески",
+        ),
+    ),
+    "шлёпнуть": (
+        "slap.gif", "slap", "🖐 Шлёп", PLAY_COLOR,
+        (
+            "{a} шутливо шлёпает {b}",
+            "{a} отвешивает {b} лёгкий шлепок",
+            "{a} шлёпает {b} по плечу",
+        ),
+    ),
+    "стукнуть": (
+        "bonk.gif", "bonk", "🔨 Бонк", PLAY_COLOR,
+        (
+            "{a} стукает {b} по голове",
+            "{a} отвешивает {b} лёгкий бонк",
+            "{a} стукает {b} кулачком",
+        ),
+    ),
+    "укусить": (
+        "bite.gif", "bite", "😼 Кусь", PLAY_COLOR,
+        (
+            "{a} кусает {b}",
+            "{a} шутливо кусает {b} за плечо",
+            "{a} цапает {b} за руку",
+        ),
+    ),
+    "ткнуть": (
+        "poke.gif", "poke", "👉 Тык", PLAY_COLOR,
+        (
+            "{a} тыкает {b} в бок",
+            "{a} тычет в {b} пальцем",
+            "{a} тыкает {b} и хихикает",
+        ),
+    ),
+    "пощекотать": (
+        "tickle.gif", "tickle", "🤭 Щекотка", PLAY_COLOR,
+        (
+            "{a} щекочет {b}",
+            "{a} нападает на {b} с щекоткой",
+            "{a} щекочет {b} до слёз",
+        ),
+    ),
+    "пять": (
+        "highfive.gif", "highfive", "🙌 Пять", CALM_COLOR,
+        (
+            "{a} даёт {b} пять",
+            "{a} ловит ладонь {b} для хай-файва",
+            "{a} хлопает {b} по ладони",
+        ),
+    ),
+    "держаться": (
+        "handhold.gif", "handhold", "🤝 За руку", HEART_COLOR,
+        (
+            "{a} берёт {b} за руку",
+            "{a} переплетает пальцы с {b}",
+            "{a} не отпускает руку {b}",
+        ),
+    ),
 }
 
 SPOUSE_LINES = (
     "💞 Вторая половинка — самые тёплые объятия",
     "💞 Вы ведь супруги, у вас всё по-настоящему",
     "❤️ Это ваша вторая половинка",
+)
+
+# Для пинков и щекотки романтичная строчка выглядит странно — своя.
+PLAYFUL = {"пнуть", "шлёпнуть", "стукнуть", "укусить", "ткнуть", "пощекотать"}
+
+PLAYFUL_SPOUSE_LINES = (
+    "💞 Супруги тоже балуются",
+    "💞 Любовь-любовью, а пинок по расписанию",
+    "❤️ Вторая половинка всё прощает",
 )
 
 SELF_LINES = (
@@ -146,7 +220,8 @@ def build_embed(
         color=HEART_COLOR if spouse else color,
     )
     if spouse:
-        embed.description += "\n\n" + random.choice(SPOUSE_LINES)
+        lines = PLAYFUL_SPOUSE_LINES if action in PLAYFUL else SPOUSE_LINES
+        embed.description += "\n\n" + random.choice(lines)
     embed.set_footer(text="❤️ Roet Deluxe")
     return embed, filename
 
@@ -308,6 +383,56 @@ class RP(commands.Cog):
     @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
     async def blowkiss(self, interaction: discord.Interaction, user: discord.Member):
         await self._run(interaction, "чмок", user)
+
+    # ── хулиганские ───────────────────────────────────────────────────────────
+
+    @app_commands.command(name="пнуть", description="Легонько пнуть кого-то 🦵")
+    @app_commands.describe(user="Кого пнуть")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def kick(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "пнуть", user)
+
+    @app_commands.command(name="шлёпнуть", description="Шутливо шлёпнуть кого-то 🖐")
+    @app_commands.describe(user="Кого шлёпнуть")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def slap(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "шлёпнуть", user)
+
+    @app_commands.command(name="стукнуть", description="Стукнуть кого-то по голове 🔨")
+    @app_commands.describe(user="Кого стукнуть")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def bonk(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "стукнуть", user)
+
+    @app_commands.command(name="укусить", description="Шутливо укусить кого-то 😼")
+    @app_commands.describe(user="Кого укусить")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def bite(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "укусить", user)
+
+    @app_commands.command(name="ткнуть", description="Тыкнуть кого-то пальцем 👉")
+    @app_commands.describe(user="Кого ткнуть")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def poke(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "ткнуть", user)
+
+    @app_commands.command(name="пощекотать", description="Защекотать кого-то 🤭")
+    @app_commands.describe(user="Кого пощекотать")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def tickle(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "пощекотать", user)
+
+    @app_commands.command(name="пять", description="Дать пять 🙌")
+    @app_commands.describe(user="Кому дать пять")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def highfive(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "пять", user)
+
+    @app_commands.command(name="держаться", description="Взять кого-то за руку 🤝")
+    @app_commands.describe(user="За чью руку взяться")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.guild_id, i.user.id))
+    async def handhold(self, interaction: discord.Interaction, user: discord.Member):
+        await self._run(interaction, "держаться", user)
 
 
 async def setup(bot: commands.Bot):
