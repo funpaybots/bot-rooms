@@ -240,15 +240,18 @@ def build_embed(
     target_name: str,
     *,
     spouse: bool = False,
+    actor_mention: str = "",
     target_mention: str = "",
 ) -> tuple:
     """Чистая сборка эмбеда: (embed, имя локального файла).
 
-    target_mention — «<@id>» для супружеской строчки, чтобы вторая половинка
-    получила уведомление. Картинку навешивает вызывающий код.
+    actor_mention/target_mention — «<@id>»: если переданы, в тексте будут
+    живые упоминания вместо простых имён. Картинку навешивает вызывающий код.
     """
     filename, _endpoint, title, color, variants = ACTIONS[action]
-    text = random.choice(variants).format(a=actor_name, b=target_name)
+    a = actor_mention or actor_name
+    b = target_mention or target_name
+    text = random.choice(variants).format(a=a, b=b)
     embed = discord.Embed(
         title=title,
         description=text,
@@ -256,9 +259,7 @@ def build_embed(
     )
     if spouse:
         lines = PLAYFUL_SPOUSE_LINES if action in PLAYFUL else SPOUSE_LINES
-        embed.description += "\n\n" + random.choice(lines).format(
-            a=actor_name, b=target_mention or target_name
-        )
+        embed.description += "\n\n" + random.choice(lines).format(a=a, b=b)
     embed.set_footer(text="❤️ Roet Deluxe")
     return embed, filename
 
@@ -342,10 +343,13 @@ class RP(commands.Cog):
             interaction.user.display_name,
             target.display_name,
             spouse=spouse,
+            actor_mention=interaction.user.mention,
             target_mention=target.mention,
         )
-        # Пингуем только того, на кого направлено действие, — никаких @everyone.
-        mentions = discord.AllowedMentions(users=[target], everyone=False)
+        # Пингуем только участников действия, — никаких @everyone и ролей.
+        mentions = discord.AllowedMentions(
+            users=[interaction.user, target], everyone=False
+        )
 
         path = find_local_image(filename, pair_suffix(interaction.user, target))
         if path:

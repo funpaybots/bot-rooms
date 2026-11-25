@@ -60,6 +60,22 @@ check(
     "Петя" in rp.build_embed("обнять", "Маша", "Петя", spouse=True)[0].description,
 )
 
+embed_both, _ = rp.build_embed(
+    "обнять", "Маша", "Петя", spouse=True,
+    actor_mention="<@111>", target_mention="<@222>",
+)
+action_line = embed_both.description.split("\n")[0]
+check(
+    "both mentions in action line",
+    "<@111>" in action_line and "<@222>" in action_line,
+)
+check(
+    "compliment repeats both mentions",
+    "<@111>" in embed_both.description.split("\n")[-1]
+    and "<@222>" in embed_both.description.split("\n")[-1],
+)
+check("names replaced by mentions", "Маша" not in embed_both.description)
+
 embed_play, _ = rp.build_embed("пнуть", "Маша", "Петя", spouse=True, target_mention="<@222>")
 check(
     "playful spouse line",
@@ -158,7 +174,9 @@ class _FakeInteraction:
         self.response = _Sent()
         self.guild = None
         self.guild_id = 4242
-        self.user = SimpleNamespace(id=uid, display_name=name)
+        self.user = SimpleNamespace(
+            id=uid, display_name=name, mention=f"<@{uid}>"
+        )
 
 
 class _FakeMember:
@@ -187,10 +205,14 @@ check("local file attached", "file" in sent and sent["file"].filename == "hug.gi
 check("local file embed image", sent["embed"].image.url == "attachment://hug.gif")
 check("local file auto-delete", sent.get("delete_after") == rp.DELETE_AFTER)
 check(
-    "mentions limited to target",
+    "mentions limited to participants",
     isinstance(sent.get("allowed_mentions"), discord.AllowedMentions)
-    and sent["allowed_mentions"].users == [target_member]
+    and {u.id for u in sent["allowed_mentions"].users} == {1, target_member.id}
     and sent["allowed_mentions"].everyone is False,
+)
+check(
+    "both mentioned in action",
+    "<@1>" in sent["embed"].description and "<@2>" in sent["embed"].description,
 )
 
 # Супруги: розовый цвет + комплимент с упоминанием
