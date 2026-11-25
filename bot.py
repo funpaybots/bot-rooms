@@ -61,6 +61,11 @@ async def main():
         except Exception as e:
             log.error("ОШИБКА загрузки cog: %s", e)
             raise
+        try:
+            await bot.load_extension("cogs.rp")
+            log.info("Cog rp загружен")
+        except Exception as e:
+            log.error("ОШИБКА загрузки cog rp: %s", e)
         await bot.start(_load_token())
 
 
