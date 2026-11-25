@@ -13,6 +13,7 @@
 import logging
 import os
 import random
+import time
 
 import aiohttp
 import discord
@@ -30,6 +31,12 @@ GIFT_COLOR = 0xF0B46A
 
 NEKOS_API = "https://nekos.best/api/v2/{endpoint}"
 USER_AGENT = "RoetDeluxe/1.0 (+https://github.com/funpaybots/bot-rooms)"
+
+# Чистим за собой: РП-сообщения удаляются через 5 минут, чтобы не копился спам.
+DELETE_AFTER = 300
+# Общая пауза между любыми РП-действиями одного человека, чтобы не прыгали
+# с /обнять на /поцеловать каждую секунду. 0 — выключить.
+GLOBAL_COOLDOWN = 10.0
 
 # ключ команды → (файл, эндпоинт nekos.best, заголовок, цвет, варианты текста)
 # {a} — кто действует, {b} — на кого
@@ -175,6 +182,24 @@ class RP(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # (guild_id, user_id) → время последнего РП-действия
+        self._last_use = {}
+
+    async def _rate_ok(self, interaction: discord.Interaction) -> bool:
+        """Общий тормоз между РП-командами. False — уже ответили отказом."""
+        if GLOBAL_COOLDOWN <= 0:
+            return True
+        key = (interaction.guild_id, interaction.user.id)
+        now = time.monotonic()
+        last = self._last_use.get(key)
+        if last is not None and now - last < GLOBAL_COOLDOWN:
+            left = GLOBAL_COOLDOWN - (now - last)
+            await interaction.response.send_message(
+                f"РП-пауза: ещё {left:.0f} с.", ephemeral=True
+            )
+            return False
+        self._last_use[key] = now
+        return True
 
     @staticmethod
     def _is_spouse(guild, a_id: int, b_id: int) -> bool:
@@ -196,6 +221,9 @@ class RP(commands.Cog):
             await interaction.response.send_message(random.choice(SELF_LINES), ephemeral=True)
             return
 
+        if not await self._rate_ok(interaction):
+            return
+
         spouse = self._is_spouse(interaction.guild, interaction.user.id, target.id)
         embed, filename = build_embed(
             action,
@@ -209,14 +237,16 @@ class RP(commands.Cog):
             name = os.path.basename(path)
             embed.set_image(url=f"attachment://{name}")
             await interaction.response.send_message(
-                embed=embed, file=discord.File(path, filename=name)
+                embed=embed,
+                file=discord.File(path, filename=name),
+                delete_after=DELETE_AFTER,
             )
             return
 
         link = await fetch_image_url(action)
         if link:
             embed.set_image(url=link)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, delete_after=DELETE_AFTER)
 
     # ── ошибки ────────────────────────────────────────────────────────────────
 

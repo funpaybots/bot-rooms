@@ -80,6 +80,7 @@ class _FakeInteraction:
     def __init__(self, uid=1, name="Маша"):
         self.response = _Sent()
         self.guild = None
+        self.guild_id = 4242
         self.user = SimpleNamespace(id=uid, display_name=name)
 
 
@@ -98,6 +99,7 @@ with open(os.path.join(tmp, "pat.png"), "wb") as f:
     f.write(b"\x89PNG" + b"0" * 64)
 
 fake = rp.RP(None)
+rp.GLOBAL_COOLDOWN = 0  # в остальных тестах тормоз не мешает
 
 
 async def _no_api(_action):
@@ -111,6 +113,7 @@ asyncio.run(fake._run(itx, "обнять", _FakeMember()))
 sent = itx.response.calls[0]
 check("local file attached", "file" in sent and sent["file"].filename == "hug.gif")
 check("local file embed image", sent["embed"].image.url == "attachment://hug.gif")
+check("local file auto-delete", sent.get("delete_after") == rp.DELETE_AFTER)
 
 # API-фолбэк: файла нет — берём ссылку
 
@@ -131,6 +134,7 @@ asyncio.run(fake._run(itx2, "чмок", _FakeMember()))
 sent2 = itx2.response.calls[0]
 check("api image used", sent2["embed"].image.url == "https://nekos.best/api/v2/pat/xyz.gif")
 check("api no file", "file" not in sent2)
+check("api auto-delete", sent2.get("delete_after") == rp.DELETE_AFTER)
 
 # API молчит — текстом, без падения
 
@@ -144,8 +148,24 @@ itx3 = _FakeInteraction()
 asyncio.run(fake._run(itx3, "угостить", _FakeMember()))
 sent3 = itx3.response.calls[0]
 check("no api still works", sent3["embed"].image.url is None and "embed" in sent3)
+check("no api auto-delete", sent3.get("delete_after") == rp.DELETE_AFTER)
 
 rp.fetch_image_url = orig_fetch
+
+# Общий тормоз: два РП-действия подряд одним человеком
+rp.GLOBAL_COOLDOWN = 10.0
+fake._last_use.clear()
+asyncio.run(fake._run(_FakeInteraction(uid=7), "обнять", _FakeMember(uid=8, name="Аня")))
+itx_rate = _FakeInteraction(uid=7)
+asyncio.run(fake._run(itx_rate, "чмок", _FakeMember(uid=8, name="Аня")))
+check(
+    "global cooldown blocks spam",
+    itx_rate.response.calls
+    and itx_rate.response.calls[0].get("ephemeral") is True
+    and "пауза" in str(itx_rate.response.calls[0].get("content")),
+)
+rp.GLOBAL_COOLDOWN = 0
+fake._last_use.clear()
 
 # Бот и сам себя — отказ, эфемерно
 itx4 = _FakeInteraction()
@@ -179,6 +199,9 @@ check("commands registered", names == EXPECTED, str(sorted(names)))
 
 src = open(os.path.join(os.path.dirname(rp.__file__), "rp.py"), encoding="utf-8").read()
 check("cooldowns", src.count("cooldown(1, 3.0") == len(EXPECTED))
+check("delete after 5 min", rp.DELETE_AFTER == 300)
+check("all sends auto-delete", src.count("delete_after=DELETE_AFTER") == 2, str(src.count("delete_after=DELETE_AFTER")))
+check("global cooldown wired", "_rate_ok" in src and "GLOBAL_COOLDOWN" in src)
 check("cyrillic ok", "Обнимашки" in src)
 cjk = len(re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]", src))
 check("no CJK", cjk == 0, str(cjk))
