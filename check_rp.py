@@ -76,6 +76,58 @@ check(
     rp.parse_nekos_payload({"results": [{"url": "http://evil.example/x.gif"}]}) == "",
 )
 
+# ── общая тестовая папка картинок ────────────────────────────────────────────
+
+tmp = tempfile.mkdtemp(prefix="rp_check_")
+rp.RP_DIR = tmp
+with open(os.path.join(tmp, "hug.gif"), "wb") as f:
+    f.write(b"GIF89a" + b"0" * 64)
+with open(os.path.join(tmp, "pat.png"), "wb") as f:
+    f.write(b"\x89PNG" + b"0" * 64)
+
+# ── пол пары и выбор картинки ────────────────────────────────────────────────
+
+
+class _Role:
+    def __init__(self, rid):
+        self.id = rid
+
+
+class _Gendered:
+    def __init__(self, *role_ids):
+        self.roles = [_Role(r) for r in role_ids]
+        self.id = 1
+        self.display_name = "x"
+
+
+male_id = 1573422846485594193
+female_id = 1573422843574886453
+unknown_id = 999
+
+check("suffix mm", rp.pair_suffix(_Gendered(male_id), _Gendered(male_id)) == "mm")
+check("suffix ff", rp.pair_suffix(_Gendered(female_id), _Gendered(female_id)) == "ff")
+check("suffix mf", rp.pair_suffix(_Gendered(male_id), _Gendered(female_id)) == "mf")
+check("suffix mf reversed", rp.pair_suffix(_Gendered(female_id), _Gendered(male_id)) == "mf")
+check("suffix no gender", rp.pair_suffix(_Gendered(unknown_id), _Gendered(male_id)) == "")
+check("suffix roles missing", rp.pair_suffix(object(), object()) == "")
+
+with open(os.path.join(tmp, "hug_mm.gif"), "wb") as f:
+    f.write(b"GIF89a" + b"0" * 64)
+
+check(
+    "gender file wins",
+    os.path.basename(rp.find_local_image("hug.gif", "mm")) == "hug_mm.gif",
+)
+check(
+    "gender fallback to generic",
+    os.path.basename(rp.find_local_image("hug.gif", "ff")) == "hug.gif",
+)
+check(
+    "no suffix uses generic",
+    os.path.basename(rp.find_local_image("hug.gif", "")) == "hug.gif",
+)
+check("missing image", rp.find_local_image("nope.gif", "mm") == "")
+
 # ── рантайм: локальный файл важнее API ────────────────────────────────────────
 
 
@@ -104,13 +156,6 @@ class _FakeMember:
         self.display_name = name
         self.bot = bot
 
-
-tmp = tempfile.mkdtemp(prefix="rp_check_")
-rp.RP_DIR = tmp
-with open(os.path.join(tmp, "hug.gif"), "wb") as f:
-    f.write(b"GIF89a" + b"0" * 64)
-with open(os.path.join(tmp, "pat.png"), "wb") as f:
-    f.write(b"\x89PNG" + b"0" * 64)
 
 fake = rp.RP(None)
 rp.GLOBAL_COOLDOWN = 0  # в остальных тестах тормоз не мешает

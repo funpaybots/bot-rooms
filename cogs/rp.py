@@ -192,16 +192,42 @@ BOT_LINES = (
 )
 
 
-def find_local_image(filename: str) -> str:
+def _gender(member) -> str:
+    """'m' или 'f' по ролям пола сервера, пусто — не поняли."""
+    try:
+        from cogs.rooms import MALE_ROLE_ID, FEMALE_ROLE_ID
+    except Exception:  # noqa: BLE001 - без rooms живём без пола
+        return ""
+    ids = {r.id for r in (getattr(member, "roles", None) or [])}
+    if MALE_ROLE_ID in ids:
+        return "m"
+    if FEMALE_ROLE_ID in ids:
+        return "f"
+    return ""
+
+
+def pair_suffix(actor, target) -> str:
+    """'mm' / 'ff' / 'mf' для выбора картинки под пару. Пусто — пол неизвестен."""
+    a, b = _gender(actor), _gender(target)
+    if not a or not b:
+        return ""
+    return a * 2 if a == b else "mf"
+
+
+def find_local_image(filename: str, suffix: str = "") -> str:
     """Путь к локальной картинке в assets/rp/ или пустая строка.
 
-    Ищем по имени без расширения: hug.gif, hug.png, hug.webp — что найдётся.
+    Сначала ищем вариант под пару (hug_mm.gif), потом общий (hug.gif).
+    Расширение любое: gif, png, webp, jpg.
     """
     stem = os.path.splitext(filename)[0]
-    for ext in (".gif", ".png", ".webp", ".jpg", ".jpeg"):
-        path = os.path.join(RP_DIR, stem + ext)
-        if os.path.isfile(path):
-            return path
+    names = [f"{stem}_{suffix}"] if suffix else []
+    names.append(stem)
+    for name in names:
+        for ext in (".gif", ".png", ".webp", ".jpg", ".jpeg"):
+            path = os.path.join(RP_DIR, name + ext)
+            if os.path.isfile(path):
+                return path
     return ""
 
 
@@ -307,7 +333,7 @@ class RP(commands.Cog):
             spouse=spouse,
         )
 
-        path = find_local_image(filename)
+        path = find_local_image(filename, pair_suffix(interaction.user, target))
         if path:
             name = os.path.basename(path)
             embed.set_image(url=f"attachment://{name}")
