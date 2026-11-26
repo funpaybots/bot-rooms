@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from storage import load, save
+from version import BUILD
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +30,8 @@ DEFAULT_PANEL_CH   = 1573423257724395575   # 🔑--мой-уголок
 COLOR = 0xA9C9FF
 HEART_COLOR = 0xFF9AD5
 
-# Метка сборки: видна в футере /setup_couples. Если её в ответе нет —
-# на хосте крутится старый код, рестарт/обновление не прошли.
-BUILD = "25.11.2"
+# Метка сборки живёт в version.py — видна в футере /setup_couples.
+# Если в ответе её нет — на хосте крутится старый код, рестарт не прошёл.
 
 # Роли пола сервера Roet — брак только ♂ + ♀
 MALE_ROLE_ID = 1573422846485594193

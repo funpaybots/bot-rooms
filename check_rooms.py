@@ -343,7 +343,7 @@ check(
     "no direct response in setup_couples tail",
     "interaction.response.send_message" not in setup_couples_src,
 )
-check("build stamp in footer", 'сборка {BUILD}' in src and 'BUILD = ' in src)
+check("build stamp in footer", 'сборка {BUILD}' in src and rc.BUILD == __import__("version").BUILD)
 
 dv = rc.DivorceView(_FakeDiscordMember(1), _FakeDiscordMember(2))
 check("divorce buttons", len(dv.children) == 2)
